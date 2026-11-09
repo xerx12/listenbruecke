@@ -20,7 +20,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest==9.2.0", "pytest-asyncio==1.4.1.post1", "PyYAML>=6,<7"]
+test = ["pytest==9.2.0", "pytest-asyncio==1.4.1.post1", "PyYAML==6.0.3"]
 
 [project.scripts]
 listenbruecke = "listenbruecke.main:run"
