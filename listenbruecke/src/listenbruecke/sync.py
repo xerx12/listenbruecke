@@ -5,6 +5,7 @@ intention before execution. Ambiguous outcomes are held for review instead of
 blindly retrying creates and producing duplicates.
 """
 
+import copy
 import hashlib
 import json
 import unicodedata
@@ -23,6 +24,21 @@ def fingerprint(fields):
 class SyncEngine:
     def __init__(self, store):
         self.store = store
+
+    def state_key(self, targets):
+        keys = [f"{t['provider']}:{t['list_id']}" for t in targets]
+        group = hashlib.sha256(json.dumps({
+            "targets": sorted(keys), "generation": self.store.get("account_generation", 0)
+        }, sort_keys=True).encode()).hexdigest()[:24]
+        return "sync:" + group
+
+    def include_target(self, targets, target):
+        """Retain every baseline/intention while extending an existing group."""
+        destination = self.state_key([*targets, target])
+        if self.store.get(destination) is None:
+            original = self.store.get(self.state_key(targets))
+            if original is not None:
+                self.store.set(destination, copy.deepcopy(original))
 
     async def run(self, targets, connectors, *, propagate_deletions=False):
         if len(targets) < 2:
@@ -43,10 +59,7 @@ class SyncEngine:
                 for other, other_data in snapshots.items():
                     if other.startswith("homeassistant:") and set(data) & set(other_data):
                         raise ConnectorError("Diese Home-Assistant-Liste ist bereits dieselbe Bring!-Liste. Bitte nur eine davon auswählen.")
-        group = hashlib.sha256(json.dumps({
-            "targets": sorted(keys), "generation": self.store.get("account_generation", 0)
-        }, sort_keys=True).encode()).hexdigest()[:24]
-        state_key = "sync:" + group
+        state_key = self.state_key(targets)
         state = self.store.get(state_key, {"records": {}, "ignored": {}})
         records = state["records"]
         counts = {"ok": True, "added": 0, "updated": 0, "removed": 0, "conflicts": 0}

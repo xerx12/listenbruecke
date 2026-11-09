@@ -17,7 +17,7 @@ CREATE, DELETE, UPDATE, DESCRIPTION = 1, 2, 4, 64
 _FORMAT_ERROR = "Home Assistant hat ein unbekanntes Listenformat geliefert."
 _CONFIRM_ERROR = "Home Assistant hat die Änderung noch nicht bestätigt. Bitte die Liste neu laden."
 _LABEL_MARKER = " ⟦Menge: "
-_ALIAS_PLATFORMS = {"bring", "monsieur_cuisine"}
+_ALIAS_PLATFORMS = {"bring", "monsieur_cuisine", "listenbruecke"}
 _ALEXA_MIRROR_PLATFORMS = {"alexa_devices", "alexa_todo_lists"}
 
 
@@ -136,6 +136,8 @@ class HomeAssistantConnector:
         if not re.fullmatch(r"todo\.[a-z0-9_]+", list_id):
             raise ConnectorError("Bitte eine gültige Home-Assistant-To-do-Liste auswählen.")
         await self._ensure_origins()
+        if self.origins.get(list_id) == "listenbruecke":
+            raise UnsupportedOperation("Diese Home-Assistant-Liste ist bereits die gemeinsame Listenbrücke-Liste und kann nicht zusätzlich als Quelle verwendet werden.")
         if self.origins.get(list_id) in _ALIAS_PLATFORMS:
             raise UnsupportedOperation("Diese Home-Assistant-Liste ist bereits über Bring! oder Monsieur Cuisine verbunden. Bitte direkt beim Anbieter auswählen.")
         if list_id not in self.origins:
