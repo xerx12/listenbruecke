@@ -525,6 +525,16 @@
       if (!status || !Array.isArray(status.providers) || typeof status.sync !== "object") throw new Error("Der Status des Servers ist unvollständig. Bitte versuche es erneut.");
       state.status = status;
       if (settings) state.settings = settings;
+      const applySettings = Boolean(settings) || !state.settingsDirty;
+      if (!settings && !state.settingsDirty && state.settings) {
+        state.settings = {
+          ...state.settings,
+          enabled: Boolean(status.sync.enabled),
+          interval_seconds: Number.isInteger(status.sync.interval_seconds) ? status.sync.interval_seconds : state.settings.interval_seconds,
+          targets: Array.isArray(status.sync.targets) ? status.sync.targets : state.settings.targets,
+          propagate_deletions: typeof status.sync.propagate_deletions === "boolean" ? status.sync.propagate_deletions : state.settings.propagate_deletions,
+        };
+      }
       if (integration.data) {
         state.integration = integrationState(integration.data);
         state.integrationError = null;
@@ -532,7 +542,7 @@
       if (Array.isArray(status.events)) state.events = status.events;
       $("server-error").hidden = true;
       renderProviders();
-      renderLists(Boolean(settings));
+      renderLists(applySettings);
       renderOverview();
       renderEvents();
       setText("last-refreshed", `Aktualisiert um ${new Intl.DateTimeFormat("de-DE", { hour: "2-digit", minute: "2-digit" }).format(new Date())} Uhr`);
