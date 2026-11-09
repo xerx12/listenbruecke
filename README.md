@@ -18,7 +18,7 @@
 
 <p align="center">
   <a href="https://github.com/xerx12/listenbruecke/actions/workflows/tests.yml"><img src="https://github.com/xerx12/listenbruecke/actions/workflows/tests.yml/badge.svg" alt="Automatisierte Tests"></a>
-  &nbsp; <strong>v0.3.0 · experimentell</strong> &nbsp; · &nbsp; <a href="LICENSE">MIT-Lizenz</a>
+  &nbsp; <strong>v0.3.1 · experimentell</strong> &nbsp; · &nbsp; <a href="LICENSE">MIT-Lizenz</a>
 </p>
 
 ![Listenbrücke: Übersicht der Verbindungen und des Abgleichs, ohne persönliche Kontodaten](docs/assets/interface.png)
@@ -56,7 +56,7 @@ Liste bildet dann die zweite Seite des Abgleichs.
 
 ## Stand
 
-**Version 0.3.0 ist experimentell.** Tests prüfen die Anbieter-Anbindungen und den
+**Version 0.3.1 ist experimentell.** Tests prüfen die Anbieter-Anbindungen und den
 Abgleich mit simulierten Antworten sowie die echte lokale Weboberfläche mit
 synthetischen Konten. Anmeldung und vollständiger Abgleich müssen zusätzlich mit
 den eigenen Konten geprüft werden. Die inoffiziellen Anbieter-Schnittstellen können

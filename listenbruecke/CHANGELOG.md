@@ -1,5 +1,11 @@
 # Änderungen
 
+## 0.3.1
+
+- Home-Assistant-Entitäten zeigen neue Artikel und Änderungen sofort nach der Aktion.
+- Der Dienst wartet auf die lokale Aktualisierung und umgeht dafür den Polling-Debouncer.
+- Vier Regressionstests prüfen direktes Lesen nach Hinzufügen, Ändern, Löschen und Einstellen.
+
 ## 0.3.0
 
 - Native Home-Assistant-Integration mit Gerät, gemeinsamer To-do-Liste und Steuerung.
