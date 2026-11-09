@@ -5,7 +5,7 @@ Oberfläche zusammenführen. Verbindungstests, Listenauswahl, automatischer Abgl
 und Protokoll sind enthalten. Zugangsdaten werden im privaten Datenverzeichnis
 verschlüsselt gespeichert.
 
-**Version 0.3.0 ist experimentell.** Bei Monsieur-Cuisine-Rezeptzutaten ist nur der
+**Version 0.3.1 ist experimentell.** Bei Monsieur-Cuisine-Rezeptzutaten ist nur der
 Erledigt-Status schreibbar; Name, Menge und einzelne Löschungen bleiben geschützt.
 Bring!-Listen, die bereits in Home Assistant erscheinen, werden nicht doppelt
 eingebunden.
