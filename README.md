@@ -18,7 +18,7 @@
 
 <p align="center">
   <a href="https://github.com/xerx12/listenbruecke/actions/workflows/tests.yml"><img src="https://github.com/xerx12/listenbruecke/actions/workflows/tests.yml/badge.svg" alt="Automatisierte Tests"></a>
-  &nbsp; <strong>v0.2.0 · experimentell</strong> &nbsp; · &nbsp; <a href="LICENSE">MIT-Lizenz</a>
+  &nbsp; <strong>v0.3.0 · experimentell</strong> &nbsp; · &nbsp; <a href="LICENSE">MIT-Lizenz</a>
 </p>
 
 ![Listenbrücke: Übersicht der Verbindungen und des Abgleichs, ohne persönliche Kontodaten](docs/assets/interface.png)
@@ -41,6 +41,9 @@ ab, damit du Einträge und Abhakstatus zusammenhalten kannst.
   manueller Start und Statusanzeige für laufende Abgleiche.
 - **Änderungen nachvollziehen:** Das Protokoll zeigt Verbindungsfehler und Konflikte.
   Gespeicherte Artikelzuordnungen bleiben über Neustarts erhalten.
+- **Direkt in Home Assistant bedienen:** Eine optionale HACS-Integration legt das
+  Gerät Listenbrücke an: gemeinsame Einkaufsliste, Anbieterstatus, letzter Abgleich,
+  Pausenschalter, Prüfintervall und die Taste „Jetzt abgleichen“.
 - **Löschungen bewusst steuern:** Das Übertragen von Löschungen ist standardmäßig aus.
   Ein fehlgeschlagener Abruf wird niemals als leere Liste behandelt.
 
@@ -48,10 +51,12 @@ Eine Bring!-Liste, die bereits in Home Assistant angezeigt wird, ist dieselbe Li
 Sie wird nicht zusätzlich als unabhängige HA-Liste verbunden. **Eine eigene lokale
 Home-Assistant-Liste ist optional**. Du kannst beliebige zwei bis vier Anbieter
 verbinden, etwa Bring! und Alexa. Pro Anbieter wird eine Liste abgeglichen.
+Mit der gemeinsamen Listenbrücke-Liste genügt ein externer Anbieter: Die lokale
+Liste bildet dann die zweite Seite des Abgleichs.
 
 ## Stand
 
-**Version 0.2.0 ist experimentell.** Tests prüfen die Anbieter-Anbindungen und den
+**Version 0.3.0 ist experimentell.** Tests prüfen die Anbieter-Anbindungen und den
 Abgleich mit simulierten Antworten sowie die echte lokale Weboberfläche mit
 synthetischen Konten. Anmeldung und vollständiger Abgleich müssen zusätzlich mit
 den eigenen Konten geprüft werden. Die inoffiziellen Anbieter-Schnittstellen können
@@ -95,6 +100,33 @@ Die interne Home-Assistant-Verbindung wird vom Supervisor bereitgestellt. Die Ap
 benötigt weder Host-Netzwerk noch privilegierten Modus oder Zugriff auf das
 Home-Assistant-Konfigurationsverzeichnis. Ein Home-Assistant-Container ohne
 Supervisor kann die Docker-Variante verwenden.
+
+### Gerät, Entitäten und gemeinsame Einkaufsliste
+
+Für **Home Assistant ab 2026.10.4** gibt es zusätzlich eine native Integration.
+Die App führt den Abgleich aus; die Integration stellt die Bedienung in Home
+Assistant bereit. Herstellerzugänge werden weiterhin nur in der App eingerichtet.
+
+1. In **HACS → Benutzerdefinierte Repositories** dieses Repository als Typ
+   **Integration** hinzufügen: `https://github.com/xerx12/listenbruecke`.
+2. **Listenbrücke** herunterladen und Home Assistant neu starten.
+3. In der Listenbrücke-Weboberfläche unter **Verbindungen → Home Assistant** den
+   Bereich für Geräte und Entitäten öffnen und einen Verbindungsschlüssel erstellen.
+4. Unter **Einstellungen → Geräte & Dienste → Integration hinzufügen → Listenbrücke**
+   die angezeigte App-Adresse und den Schlüssel eintragen.
+
+Jetzt erscheint das Gerät **Listenbrücke** mit einer gemeinsamen To-do-Liste.
+Die Liste ist auch im Home-Assistant-Bereich **To-do-Listen** und als Dashboardkarte
+verfügbar. Über `todo.add_item` können Automationen Artikel hinzufügen; Assist kann
+die Liste nach entsprechender Freigabe per Sprache bedienen.
+
+Die Integration pollt lokal. Die Artikel bleiben mit stabilen IDs in der App
+gespeichert. Bei pausiertem Abgleich können lokale Änderungen erfasst werden;
+sie werden nach dem Einschalten des Abgleichs an die Anbieter übertragen.
+Der Verbindungsschlüssel berechtigt ausschließlich zur lokalen Integrations-API,
+nicht zum Abruf von Herstellerzugängen oder Backups.
+
+Details und Entitäten: [Einrichtung](listenbruecke/DOCS.md#geräte-entitäten-und-gemeinsame-einkaufsliste).
 
 ### Docker Compose
 

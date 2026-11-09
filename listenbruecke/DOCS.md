@@ -59,6 +59,68 @@ Geschützte MC-Rezeptzutaten werden niemals durch Entfernen eines ganzen Rezepts
 ersetzt. Konflikte bleiben im Protokoll sichtbar und können durch Angleichen der
 betroffenen Angaben in den Hersteller-Apps aufgelöst werden.
 
+## Geräte, Entitäten und gemeinsame Einkaufsliste
+
+Die native Integration benötigt Home Assistant ab **2026.10.4** und eine laufende
+Listenbrücke-App ab **0.3.0**. Sie kann auch eine eigenständige Docker-Installation
+verbinden, sofern Home Assistant deren Adresse erreichen kann.
+
+### Integration installieren und verbinden
+
+1. In HACS das Menü für benutzerdefinierte Repositories öffnen und
+   `https://github.com/xerx12/listenbruecke` als Typ **Integration** hinzufügen.
+2. Listenbrücke herunterladen. Bei experimentellen Vorabversionen gegebenenfalls
+   die gewünschte Version im Download-Dialog auswählen. Home Assistant neu starten.
+3. In der Listenbrücke-Oberfläche unter **Verbindungen → Home Assistant** den Bereich
+   für Geräte und Entitäten öffnen. Einen Verbindungsschlüssel erstellen und die
+   angezeigte App-Adresse sowie den Schlüssel kopieren.
+4. In Home Assistant unter **Einstellungen → Geräte & Dienste → Integration hinzufügen**
+   **Listenbrücke** wählen und diese beiden Angaben eintragen.
+
+Manuelle Installation: Den Ordner `custom_components/listenbruecke` aus diesem
+Repository nach `/config/custom_components/listenbruecke` kopieren und Home Assistant
+neu starten. Alternativ enthält der GitHub-Release die ZIP-Datei der Integration.
+
+Der Schlüssel wird einmalig angezeigt. In der App wird nur sein Hash gespeichert.
+Beim Erstellen eines neuen Schlüssels muss die bestehende HA-Verbindung mit dem
+neuen Schlüssel aktualisiert werden. Herstellerzugänge werden nicht erneut abgefragt.
+
+### Verfügbare Entitäten
+
+| Entität | Verwendung |
+| --- | --- |
+| Gemeinsame Einkaufsliste | Artikel hinzufügen, ändern, abhaken und entfernen |
+| Anbieter verbunden | Status von Bring!, Monsieur Cuisine, Alexa und Home Assistant |
+| Problem | Zeigt einen Fehler beim letzten Abgleich |
+| Letzter erfolgreicher Abgleich | Zeitpunkt für Dashboard und Benachrichtigungen |
+| Offene Artikel | Anzahl unerledigter Artikel der gemeinsamen Liste |
+| Übertragene Änderungen | Bestätigte Ergänzungen und Aktualisierungen insgesamt |
+| Automatischer Abgleich | Abgleich einschalten oder pausieren |
+| Prüfintervall | Abstand zwischen 30 und 3600 Sekunden |
+| Jetzt abgleichen | Einen manuellen Durchlauf starten |
+
+Die Entity-IDs können in Home Assistant umbenannt werden. Die gemeinsame Liste
+findet sich im Bereich **To-do-Listen** und lässt sich als **To-do-Liste** ins
+Dashboard einfügen. Für Automationen steht die Standardaktion `todo.add_item`
+zur Verfügung. Nach Freigabe der Liste für Assist ist auch Spracheingabe möglich.
+
+Mit der gemeinsamen Liste genügt eine zusätzliche externe Anbieter-Liste. Die
+eigenen Listenbrücke-Entitäten werden nicht als weitere HA-Quelle angeboten, damit
+der Abgleich die gemeinsame Liste genau einmal verarbeitet.
+
+Lokale Änderungen werden dauerhaft gespeichert, auch wenn der automatische Abgleich
+pausiert ist. Das Löschen eines Eintrags entfernt ihn sofort aus der gemeinsamen
+Liste. Auf die externen Listen wird die Löschung nur bei aktivierter Löschweitergabe
+übertragen. Geschützte Monsieur-Cuisine-Rezeptzutaten bleiben geschützt.
+
+### Apple-Erinnerungen auf dem iPhone
+
+Die experimentelle Funktion **Reminders Sync** der iOS-Companion-App kann eine
+Apple-Erinnerungsliste mit der gemeinsamen HA-To-do-Liste verbinden. Sie erfordert
+auf dem iPhone Zugriff auf Erinnerungen; iOS entscheidet über Hintergrundläufe.
+Dies ist eine Anbindung über das iPhone und keine zusätzliche Apple-Anmeldung in
+Listenbrücke. Einrichtung: [Companion-Dokumentation](https://companion.home-assistant.io/docs/integrations/ios-reminders-sync/).
+
 ## Backup, Fehler und Updates
 
 Das gesamte App-Datenverzeichnis sichern, insbesondere `app.sqlite3` und

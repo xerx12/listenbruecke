@@ -1,5 +1,16 @@
 # Änderungen
 
+## 0.3.0
+
+- Native Home-Assistant-Integration mit Gerät, gemeinsamer To-do-Liste und Steuerung.
+- Artikel aus Dashboard, Standardaktionen und Assist in die gemeinsame Liste aufnehmen.
+- Anbieterstatus, letzter Erfolg, offene Artikel, Problemstatus und übertragene Änderungen.
+- Automatischen Abgleich schalten, Intervall ändern und manuell starten.
+- Dauerhafte lokale Artikel mit stabilen IDs und Übernahme vorhandener Sync-Baselines.
+- Eigener Verbindungsschlüssel mit beschränkter lokaler API statt zusätzlicher Herstellerzugänge.
+- Eigene App-Store- und Integrationsgrafiken sowie gültiges Sidebar-Brückensymbol.
+- Integration für Home Assistant ab 2026.10.4, Installation über HACS oder manuell.
+
 ## 0.2.0
 
 - Amazon Alexa direkt mit Amazon-Anmeldung und aktuellem Authenticator-Code verbinden.
