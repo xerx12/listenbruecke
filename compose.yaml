@@ -1,0 +1,22 @@
+services:
+  listenbruecke:
+    build: ./listenbruecke
+    image: listenbruecke:0.1.0
+    restart: unless-stopped
+    ports:
+      - "8099:8099"
+    volumes:
+      - listenbruecke_data:/data
+    environment:
+      LISTENBRUECKE_DATA: /data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+
+volumes:
+  listenbruecke_data:

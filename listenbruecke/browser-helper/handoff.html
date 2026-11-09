@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="de">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Listenbrücke verbinden</title>
+<link rel="stylesheet" href="handoff.css">
+<main>
+  <p class="eyebrow">LISTENBRÜCKE</p>
+  <h1>Anmeldung übernehmen</h1>
+  <p>Du bist bei Lidl angemeldet. Kopiere die Anmeldedaten und füge sie im geöffneten Monsieur-Cuisine-Dialog der Listenbrücke ein.</p>
+  <p>Diese Daten gelten nur einmal. Teile sie nicht mit anderen.</p>
+  <textarea id="handoff" readonly aria-label="Einmalige Anmeldedaten" rows="6" spellcheck="false" autocomplete="off"></textarea>
+  <button id="copy" type="button" disabled>Anmeldedaten kopieren</button>
+  <p id="status" role="status">Anmeldedaten werden geladen …</p>
+</main>
+<script src="handoff.js"></script>
+</html>

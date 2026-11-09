@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+.env.*
+runtime/
+*.log
+.codex-attachments/
+*.egg-info/
+data/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+node_modules/

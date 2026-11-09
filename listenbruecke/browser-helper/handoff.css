@@ -1,0 +1,8 @@
+:root {font: 17px/1.55 system-ui, sans-serif; color: #1c3431; background: #f3f5ef;}
+main {max-width: 580px; margin: 9vh auto; padding: 32px; background: #fff; border-radius: 20px;}
+.eyebrow {font-size: 12px; letter-spacing: .18em; font-weight: 700; color: #557569;}
+h1 {font-size: 30px; line-height: 1.15;}
+textarea {box-sizing: border-box; width: 100%; padding: 14px; resize: vertical; font: 13px/1.5 monospace; border: 1px solid #bccbc2; border-radius: 8px;}
+button {border: 0; border-radius: 8px; padding: 13px 20px; margin-top: 16px; background: #1c6952; color: white; font: inherit; cursor: pointer;}
+button:disabled {opacity: .55; cursor: default;}
+@media (max-width: 640px) {main {margin: 24px 12px; padding: 24px;}}

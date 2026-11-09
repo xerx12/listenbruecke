@@ -1,0 +1,536 @@
+"""Authenticated web UI and background worker for a self-hosted installation."""
+
+import asyncio
+import contextlib
+import io
+import ipaddress
+import json
+import logging
+import os
+import secrets
+import time
+import zipfile
+from contextlib import asynccontextmanager
+from pathlib import Path
+from urllib.parse import urlsplit
+
+import httpx
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+
+from listenbruecke import __version__
+from listenbruecke.models import ConnectorError
+from listenbruecke.store import Store, now
+from listenbruecke.sync import SyncEngine
+
+PROVIDERS = {"bring": "Bring!", "monsieur_cuisine": "Monsieur Cuisine", "homeassistant": "Home Assistant"}
+DEFAULT_SETTINGS = {"enabled": False, "interval_seconds": 60, "targets": [], "propagate_deletions": False}
+COOKIE = "listenbruecke_session"
+
+
+def asset_directory(name):
+    package = Path(__file__).resolve().parent
+    installed = package / name
+    return installed if installed.is_dir() else package.parent.parent / name
+
+
+class Service:
+    def __init__(self, store, *, factory=None):
+        self.store = store
+        self.http = httpx.AsyncClient(timeout=20, follow_redirects=False, trust_env=False)
+        self.clients = {}
+        self.factory = factory
+        self.lock = asyncio.Lock()
+        self.wakeup = asyncio.Event()
+        self.manual_task = None
+        self._sync_running = False
+        self.mode = "addon" if os.environ.get("SUPERVISOR_TOKEN") else "standalone"
+        self.provider_status = {}
+        for provider in PROVIDERS:
+            saved = self.store.get("provider_status:" + provider, {})
+            self.provider_status[provider] = {**saved, "connected": False, "error": None}
+
+    def settings(self):
+        return {**DEFAULT_SETTINGS, **self.store.get("sync_settings", {})}
+
+    def credentials(self, provider):
+        if provider == "homeassistant" and self.mode == "addon":
+            return {"url": "http://supervisor/core", "token": os.environ["SUPERVISOR_TOKEN"], "auto": True}
+        return self.store.get_secret(provider)
+
+    def provider(self, provider):
+        data = self.provider_status[provider]
+        return {"id": provider, "name": PROVIDERS[provider], "configured": bool(self.credentials(provider)),
+                "connected": data.get("connected", False), "error": data.get("error"),
+                "lists": data.get("lists", []), "last_test": data.get("last_test")}
+
+    def status(self):
+        metrics = self.store.get("sync_metrics", {})
+        return {"version": __version__, "mode": self.mode,
+                "providers": [self.provider(p) for p in PROVIDERS],
+                "sync": {**self.settings(), "last_run": None, "last_success": None,
+                         "last_error": None, "items_synced": 0, **metrics,
+                         "running": self.sync_running()},
+                "events": self.store.events(12)}
+
+    async def connector(self, provider):
+        if provider in self.clients:
+            return self.clients[provider]
+        credentials = self.credentials(provider)
+        if not credentials:
+            raise ConnectorError("Bitte zuerst die Verbindung einrichten.")
+        if self.factory:
+            client = await self.factory(provider, credentials)
+        elif provider == "bring":
+            from listenbruecke.connectors.bring import BringConnector
+            client = BringConnector(credentials)
+        elif provider == "homeassistant":
+            from listenbruecke.connectors.homeassistant import HomeAssistantConnector
+            client = HomeAssistantConnector(self.http, credentials["url"], credentials["token"])
+        else:
+            from listenbruecke.connectors.mc_auth import MCAuth
+            from listenbruecke.connectors.monsieur import MonsieurConnector
+            async def save(value):
+                self.store.set_secret("monsieur_cuisine", value)
+            client = MonsieurConnector(MCAuth(self.http, credentials, save))
+        self.clients[provider] = client
+        return client
+
+    async def forget_client(self, provider):
+        client = self.clients.pop(provider, None)
+        if client:
+            await client.close()
+        self.provider_status[provider] = {"connected": False, "lists": [], "error": None, "last_test": None}
+        self.store.set("provider_status:" + provider, self.provider_status[provider])
+
+    def disable_for_change(self):
+        settings = self.settings()
+        settings["enabled"] = False
+        self.store.set("sync_settings", settings)
+        self.store.set("account_generation", self.store.get("account_generation", 0) + 1)
+
+    def safe_error(self, error):
+        message = str(error)
+        for provider in PROVIDERS:
+            credentials = self.credentials(provider) or {}
+            for key in ("email", "password", "token", "jwt", "lidl_refresh_token"):
+                value = credentials.get(key)
+                if isinstance(value, str) and value and value in message:
+                    return "Die Verbindung konnte nicht geprüft werden. Bitte Einstellungen und Erreichbarkeit prüfen."
+        return message
+
+    async def test(self, provider):
+        try:
+            client = await self.connector(provider)
+            lists = await asyncio.wait_for(client.test_connection(), timeout=45)
+            status = {"connected": True, "error": None, "lists": [x.to_dict() for x in lists], "last_test": now()}
+            self.store.event("success", PROVIDERS[provider] + ": Verbindung erfolgreich geprüft.")
+        except ConnectorError as exc:
+            status = {"connected": False, "error": self.safe_error(exc), "lists": [], "last_test": now()}
+            self.store.event("error", PROVIDERS[provider] + ": Verbindungstest fehlgeschlagen.")
+        except Exception:
+            status = {"connected": False, "error": "Die Verbindung konnte nicht geprüft werden. Bitte Einstellungen und Erreichbarkeit prüfen.", "lists": [], "last_test": now()}
+            self.store.event("error", PROVIDERS[provider] + ": Verbindungstest fehlgeschlagen.")
+        self.provider_status[provider] = status
+        self.store.set("provider_status:" + provider, status)
+        return self.provider(provider)
+
+    async def synchronize(self):
+        if self.lock.locked():
+            raise ConnectorError("Ein Verbindungs- oder Synchronisierungsvorgang läuft bereits.")
+        async with self.lock:
+            self._sync_running = True
+            settings = self.settings()
+            metrics = self.store.get("sync_metrics", {})
+            metrics.update({"last_run": now(), "last_error": None})
+            self.store.set("sync_metrics", metrics)
+            try:
+                clients = {t["provider"]: await self.connector(t["provider"]) for t in settings["targets"]}
+                result = await SyncEngine(self.store).run(settings["targets"], clients,
+                    propagate_deletions=settings["propagate_deletions"])
+                # A complete reconciliation also verifies every selected source.
+                # Refresh restart-reset connection flags without discarding the
+                # list metadata collected by the explicit connection test.
+                for provider in clients:
+                    status = {**self.provider_status[provider], "connected": True,
+                              "error": None, "last_test": now()}
+                    self.provider_status[provider] = status
+                    self.store.set("provider_status:" + provider, status)
+                metrics["items_synced"] = metrics.get("items_synced", 0) + result["added"] + result["updated"]
+                if result["ok"]:
+                    metrics["last_success"] = now()
+                else:
+                    metrics["last_error"] = result["message"]
+                self.store.event("success" if result["ok"] else "warning", result["message"])
+                return result
+            except ConnectorError as exc:
+                metrics["last_error"] = self.safe_error(exc)
+                self.store.event("error", "Abgleich angehalten: " + metrics["last_error"])
+                raise ConnectorError(metrics["last_error"]) from None
+            except Exception:
+                metrics["last_error"] = "Der Abgleich konnte nicht abgeschlossen werden. Die Listen wurden nicht als leer behandelt."
+                self.store.event("error", metrics["last_error"])
+                raise ConnectorError(metrics["last_error"]) from None
+            finally:
+                self._sync_running = False
+                self.store.set("sync_metrics", metrics)
+
+    def sync_running(self):
+        return self._sync_running or bool(self.manual_task and not self.manual_task.done())
+
+    @asynccontextmanager
+    async def configure(self):
+        if self.lock.locked() or self.sync_running():
+            raise HTTPException(409, "Ein Abgleich oder Verbindungstest läuft. Bitte danach erneut versuchen.")
+        async with self.lock:
+            yield
+
+    def start_sync(self):
+        if self.lock.locked() or self.sync_running():
+            raise ConnectorError("Ein Verbindungs- oder Synchronisierungsvorgang läuft bereits.")
+        async def perform():
+            try:
+                await self.synchronize()
+            except ConnectorError:
+                pass  # synchronize has already persisted the sanitized failure.
+        self.manual_task = asyncio.create_task(perform())
+
+    async def worker(self):
+        while True:
+            self.wakeup.clear()
+            settings = self.settings()
+            if settings["enabled"] and not self.sync_running():
+                try:
+                    await self.synchronize()
+                except ConnectorError:
+                    pass
+            try:
+                await asyncio.wait_for(self.wakeup.wait(), timeout=settings["interval_seconds"])
+            except TimeoutError:
+                pass
+
+    async def close(self):
+        if self.manual_task and not self.manual_task.done():
+            self.manual_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.manual_task
+        for client in self.clients.values():
+            await client.close()
+        await self.http.aclose()
+        self.store.close()
+
+
+def create_app(data_dir=None, *, factory=None, background=True):
+    directory = Path(data_dir or os.environ.get("LISTENBRUECKE_DATA", "/data" if os.environ.get("SUPERVISOR_TOKEN") else "data"))
+    attempts = {}
+
+    @asynccontextmanager
+    async def lifespan(app):
+        service = Service(Store(directory), factory=factory)
+        app.state.service = service
+        task = asyncio.create_task(service.worker()) if background else None
+        try:
+            yield
+        finally:
+            if task:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+            await service.close()
+
+    app = FastAPI(title="Listenbrücke", version=__version__, lifespan=lifespan,
+                  docs_url=None, redoc_url=None, openapi_url=None)
+
+    def ingress(request):
+        # The add-on exposes no network port. Only Supervisor's ingress proxy is trusted.
+        return (bool(os.environ.get("SUPERVISOR_TOKEN")) and request.client is not None
+                and request.client.host == "172.30.32.2"
+                and request.headers.get("x-ingress-path", "").startswith("/api/hassio_ingress/"))
+
+    def trusted_host(request):
+        if ingress(request):
+            return True
+        try:
+            parsed = urlsplit("//" + request.headers.get("host", ""))
+            host = parsed.hostname
+            _ = parsed.port
+            if not host or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment:
+                return False
+            allowed = {"localhost", "homeassistant", "homeassistant.local"}
+            allowed.update(value.strip().lower() for value in os.environ.get("LISTENBRUECKE_ALLOWED_HOSTS", "").split(",") if value.strip())
+            if host.lower() in allowed:
+                return True
+            address = ipaddress.ip_address(host)
+            return address.is_loopback or address.is_private
+        except ValueError:
+            return False
+
+    @app.middleware("http")
+    async def protect(request: Request, call_next):
+        if request.url.path.startswith("/api/"):
+            if not trusted_host(request):
+                return JSONResponse({"detail": "Diese Serveradresse ist nicht freigegeben."}, status_code=403)
+            if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+                if request.headers.get("content-type", "").split(";")[0] != "application/json":
+                    return JSONResponse({"detail": "Die Anfrage muss JSON enthalten."}, status_code=415)
+                try:
+                    length = int(request.headers.get("content-length", "0"))
+                except ValueError:
+                    return JSONResponse({"detail": "Ungültige Anfrage."}, status_code=400)
+                if length > 32768:
+                    return JSONResponse({"detail": "Die Anfrage ist zu groß."}, status_code=413)
+                origin = request.headers.get("origin")
+                if origin and not ingress(request):
+                    try:
+                        origin_url = urlsplit(origin)
+                        valid_origin = (origin_url.netloc == request.headers.get("host")
+                                        and origin_url.scheme in ("http", "https")
+                                        and not origin_url.path and not origin_url.query and not origin_url.fragment)
+                    except ValueError:
+                        valid_origin = False
+                    if not valid_origin:
+                        return JSONResponse({"detail": "Die Anfrage stammt nicht aus dieser Oberfläche."}, status_code=403)
+            public = request.url.path in ("/api/session", "/api/setup", "/api/login")
+            if not public and not ingress(request) and not app.state.service.store.valid_session(request.cookies.get(COOKIE)):
+                return JSONResponse({"detail": "Bitte zuerst anmelden."}, status_code=401)
+            if request.method in ("POST", "PUT", "PATCH", "DELETE"):
+                body = bytearray()
+                async for chunk in request.stream():
+                    body.extend(chunk)
+                    if len(body) > 32768:
+                        return JSONResponse({"detail": "Die Anfrage ist zu groß."}, status_code=413)
+                request._body = bytes(body)
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'"
+        return response
+
+    @app.exception_handler(RequestValidationError)
+    async def invalid_input(request, exc):
+        return JSONResponse({"detail": "Bitte die eingegebenen Angaben prüfen."}, status_code=422)
+
+    @app.exception_handler(ConnectorError)
+    async def connector_error(request, exc):
+        return JSONResponse({"detail": app.state.service.safe_error(exc)}, status_code=400)
+
+    @app.exception_handler(Exception)
+    async def unexpected_error(request, exc):
+        return JSONResponse({"detail": "Die Anfrage konnte nicht abgeschlossen werden."}, status_code=500)
+
+    def set_session(response, request, token):
+        path = request.headers.get("x-ingress-path", "/") if ingress(request) else "/"
+        response.set_cookie(COOKIE, token, max_age=86400, httponly=True, samesite="lax", path=path,
+                            secure=os.environ.get("LISTENBRUECKE_SECURE_COOKIE") == "1" or request.url.scheme == "https")
+
+    @app.get("/healthz")
+    async def health():
+        return {"status": "ok", "version": __version__}
+
+    @app.get("/api/session")
+    async def session(request: Request):
+        store = app.state.service.store
+        return {"authenticated": ingress(request) or store.valid_session(request.cookies.get(COOKIE)),
+                "setup_required": store.setup_required() and not ingress(request), "ingress": ingress(request)}
+
+    @app.post("/api/setup")
+    async def setup(request: Request, data: dict):
+        store = app.state.service.store
+        if not store.setup_required():
+            raise HTTPException(409, "Die Oberfläche ist bereits eingerichtet.")
+        password = data.get("password")
+        if not isinstance(password, str) or not 12 <= len(password) <= 1024:
+            raise HTTPException(400, "Bitte ein Passwort mit mindestens 12 Zeichen wählen.")
+        store.set_password(password)
+        response = JSONResponse({"ok": True})
+        set_session(response, request, store.new_session())
+        return response
+
+    @app.post("/api/login")
+    async def login(request: Request, data: dict):
+        peer = request.client.host if request.client else "unknown"
+        recent = [stamp for stamp in attempts.get(peer, []) if time.monotonic() - stamp < 300]
+        if len(recent) >= 5:
+            raise HTTPException(429, "Bitte einige Minuten warten und die Anmeldung erneut versuchen.")
+        password = data.get("password")
+        if not isinstance(password, str) or len(password) > 1024 or not app.state.service.store.check_password(password):
+            attempts[peer] = recent + [time.monotonic()]
+            raise HTTPException(401, "Das Passwort stimmt nicht.")
+        attempts.pop(peer, None)
+        response = JSONResponse({"ok": True})
+        set_session(response, request, app.state.service.store.new_session())
+        return response
+
+    @app.post("/api/logout")
+    async def logout(request: Request):
+        app.state.service.store.delete_session(request.cookies.get(COOKIE, ""))
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(COOKIE)
+        return response
+
+    @app.get("/api/status")
+    async def status():
+        return app.state.service.status()
+
+    @app.get("/api/events")
+    async def events():
+        return app.state.service.store.events()
+
+    def check_provider(provider):
+        if provider not in PROVIDERS:
+            raise HTTPException(404, "Diese Verbindung ist nicht bekannt.")
+
+    @app.put("/api/connections/{provider}")
+    async def save_connection(provider: str, data: dict):
+        check_provider(provider)
+        if provider == "monsieur_cuisine":
+            raise HTTPException(400, "Bitte die Browseranmeldung bei Lidl verwenden.")
+        if provider == "bring":
+            if (set(data) != {"email", "password"} or not isinstance(data.get("email"), str)
+                    or "@" not in data["email"] or len(data["email"]) > 320
+                    or not isinstance(data.get("password"), str) or not 1 <= len(data["password"]) <= 1024):
+                raise HTTPException(400, "Bitte E-Mail und Passwort des Bring!-Kontos eingeben.")
+            credentials = {"email": data["email"].strip(), "password": data["password"]}
+        elif data == {"auto": True} and app.state.service.mode == "addon":
+            credentials = {"auto": True}
+        else:
+            url = data.get("url", "")
+            token = data.get("token", "")
+            try:
+                parsed = urlsplit(url)
+                _ = parsed.port
+                valid = (parsed.scheme in ("http", "https") and parsed.hostname and not parsed.username
+                         and not parsed.password and not parsed.query and not parsed.fragment)
+            except (ValueError, TypeError):
+                valid = False
+            if not valid or not isinstance(token, str) or not 1 <= len(token) <= 8192:
+                raise HTTPException(400, "Bitte die Home-Assistant-Adresse und ein Zugriffstoken eingeben.")
+            credentials = {"url": url.rstrip("/"), "token": token}
+        service = app.state.service
+        async with service.configure():
+            service.disable_for_change()
+            await service.forget_client(provider)
+            service.store.set_secret(provider, credentials)
+            service.store.event("info", PROVIDERS[provider] + ": Einstellungen gespeichert. Bitte Verbindung testen.")
+        return service.provider(provider)
+
+    @app.delete("/api/connections/{provider}")
+    async def delete_connection(provider: str):
+        check_provider(provider)
+        service = app.state.service
+        async with service.configure():
+            service.disable_for_change()
+            await service.forget_client(provider)
+            service.store.delete_secret(provider)
+        return service.provider(provider)
+
+    @app.post("/api/connections/{provider}/test")
+    async def test_connection(provider: str):
+        check_provider(provider)
+        async with app.state.service.configure():
+            return await app.state.service.test(provider)
+
+    @app.post("/api/connections/monsieur_cuisine/auth/start")
+    async def start_mc_login():
+        from listenbruecke.connectors.mc_auth import MCAuth
+        flow = MCAuth.start_login()
+        app.state.service.store.set_secret("oauth:" + flow["state"], {"verifier": flow["verifier"], "expires": time.time() + 600})
+        return {"authorization_url": flow["authorization_url"]}
+
+    @app.post("/api/connections/monsieur_cuisine/auth/complete")
+    async def complete_mc_login(data: dict):
+        from listenbruecke.connectors.mc_auth import MCAuth
+        code, state = data.get("code"), data.get("state")
+        if not isinstance(code, str) or not isinstance(state, str) or not 1 <= len(code) <= 4096 or not 1 <= len(state) <= 1024:
+            raise HTTPException(400, "Bitte das vollständige Anmeldeergebnis aus dem Browserhelfer einfügen.")
+        service = app.state.service
+        async def save(credentials):
+            service.store.set_secret("monsieur_cuisine", credentials)
+        async with service.configure():
+            pending = service.store.consume_secret("oauth:" + state)
+            if not pending or pending["expires"] < time.time():
+                raise HTTPException(400, "Die Anmeldung ist abgelaufen oder wurde schon verwendet. Bitte neu beginnen.")
+            auth = MCAuth(service.http, {}, save)
+            await auth.complete_login(code, pending["verifier"])
+            service.disable_for_change()
+            await service.forget_client("monsieur_cuisine")
+            return await service.test("monsieur_cuisine")
+
+    @app.get("/api/browser-helper.zip")
+    async def browser_helper():
+        output = io.BytesIO()
+        helper = asset_directory("browser-helper")
+        with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
+            for path in sorted(helper.rglob("*")):
+                if path.is_file():
+                    archive.write(path, path.relative_to(helper))
+            notice = helper.parent / "THIRD_PARTY_LICENSES.md"
+            if notice.is_file():
+                archive.write(notice, "THIRD_PARTY_LICENSES.md")
+        return Response(output.getvalue(), media_type="application/zip",
+                        headers={"Content-Disposition": 'attachment; filename="listenbruecke-browserhelfer.zip"'})
+
+    @app.get("/api/settings")
+    async def get_settings():
+        return app.state.service.settings()
+
+    @app.put("/api/settings")
+    async def save_settings(data: dict):
+        if not set(data) <= set(DEFAULT_SETTINGS):
+            raise HTTPException(400, "Unbekannte Einstellung.")
+        settings = {**DEFAULT_SETTINGS, **data}
+        if (type(settings["enabled"]) is not bool or type(settings["propagate_deletions"]) is not bool
+                or type(settings["interval_seconds"]) is not int or not 30 <= settings["interval_seconds"] <= 3600
+                or not isinstance(settings["targets"], list) or len(settings["targets"]) > 3):
+            raise HTTPException(400, "Bitte ein Intervall zwischen 30 und 3600 Sekunden und gültige Listen auswählen.")
+        providers = set()
+        service = app.state.service
+        async with service.configure():
+            for target in settings["targets"]:
+                if (not isinstance(target, dict) or set(target) != {"provider", "list_id"}
+                        or not isinstance(target["provider"], str)
+                        or target["provider"] not in PROVIDERS or not isinstance(target["list_id"], str)
+                        or target["provider"] in providers):
+                    raise HTTPException(400, "Bitte pro Anbieter höchstens eine Liste auswählen.")
+                provider = target["provider"]
+                providers.add(provider)
+                if not service.provider(provider)["connected"]:
+                    raise HTTPException(400, PROVIDERS[provider] + ": Bitte zuerst die Verbindung erfolgreich testen.")
+                if target["list_id"] not in {x["id"] for x in service.provider(provider)["lists"]}:
+                    raise HTTPException(400, "Die ausgewählte Liste ist nicht verfügbar oder bereits über einen anderen Anbieter eingebunden.")
+            if settings["enabled"] and len(settings["targets"]) < 2:
+                raise HTTPException(400, "Für den automatischen Abgleich mindestens zwei Listen auswählen.")
+            service.store.set("sync_settings", settings)
+            service.store.event("info", "Automatischer Abgleich aktiviert." if settings["enabled"] else "Einstellungen gespeichert; automatischer Abgleich pausiert.")
+            service.wakeup.set()
+        return settings
+
+    @app.post("/api/sync")
+    async def sync_now():
+        app.state.service.start_sync()
+        return JSONResponse({"ok": True, "accepted": True, "added": 0, "updated": 0,
+            "removed": 0, "conflicts": 0,
+            "message": "Der Abgleich wurde gestartet. Den Fortschritt findest du in der Übersicht."}, status_code=202)
+
+    web = asset_directory("web")
+    if web.is_dir():
+        app.mount("/", StaticFiles(directory=web, html=True), name="web")
+    return app
+
+
+def run():
+    import uvicorn
+    logging.getLogger("bring_api").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    # Provider exception messages or query strings must never enter access logs.
+    logging.getLogger("uvicorn.error").setLevel(logging.CRITICAL)
+    uvicorn.run(create_app(), host=os.environ.get("LISTENBRUECKE_HOST", "0.0.0.0"),
+                port=int(os.environ.get("LISTENBRUECKE_PORT", "8099")), access_log=False,
+                proxy_headers=False, log_level="warning")
+
+
+if __name__ == "__main__":
+    run()
