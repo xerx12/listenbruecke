@@ -34,6 +34,7 @@ test("local setup, provider connections, optional HA list, sync, and ingress lay
     { id: "bring", name: "Bring!", configured: false, connected: false, error: null, lists: [], last_test: null },
     { id: "monsieur_cuisine", name: "Monsieur Cuisine", configured: false, connected: false, error: null, lists: [], last_test: null },
     { id: "homeassistant", name: "Home Assistant", configured: false, connected: false, error: null, lists: [], last_test: null },
+    { id: "alexa", name: "Amazon Alexa", configured: false, connected: false, error: null, lists: [], last_test: null },
   ];
   const status = { version: "test", mode: "standalone", providers, sync: { enabled: false, interval_seconds: 60, last_run: null, last_success: null, last_error: null, items_synced: 0 }, events: [] };
   await page.route("**/api/**", async (route) => {
@@ -51,6 +52,7 @@ test("local setup, provider connections, optional HA list, sync, and ingress lay
     if (endpoint === "logout") { session.authenticated = false; return respond({ ok: true }); }
     if (endpoint === "status") return respond(status);
     if (endpoint === "events") return respond(status.events);
+    if (endpoint === "connections/alexa/auth/status") return respond({ running: false, complete: false, error: null });
     if (endpoint === "settings") {
       if (method === "PUT") { settings = body; status.sync.enabled = body.enabled; status.sync.interval_seconds = body.interval_seconds; }
       return respond(settings);
@@ -95,6 +97,8 @@ test("local setup, provider connections, optional HA list, sync, and ingress lay
     await page.locator("#app").waitFor({ state: "visible" });
     await page.locator("#last-refreshed").filter({ hasText: "Aktualisiert" }).waitFor();
     assert.match(await page.locator("#last-run").textContent(), /Noch kein/);
+    assert.equal(await page.locator("[data-provider-card]").count(), 4);
+    assert.equal(await page.locator("#nav-connection-count").textContent(), "0/4");
     assert.equal(await page.locator("[data-sync-button]").first().isDisabled(), true);
     await page.screenshot({ path: process.env.UI_SCREENSHOT || "/tmp/listenbruecke-overview.png", fullPage: true });
 
@@ -196,6 +200,167 @@ test("local setup, provider connections, optional HA list, sync, and ingress lay
     assert.deepEqual(browserErrors, []);
     assert.ok(calls.every((call) => !call.endpoint.includes("ingress/")), "All API URLs must preserve the ingress prefix");
   } finally {
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Alexa login clears secrets, resumes polling, reports failures, and syncs with Bring alone", { timeout: 60000 }, async () => {
+  const prefix = "/ingress/alexa-test/";
+  const server = http.createServer(async (request, response) => {
+    const filename = new URL(request.url, "http://localhost").pathname.slice(prefix.length) || "index.html";
+    if (!["index.html", "styles.css", "app.js"].includes(filename)) return response.writeHead(404).end();
+    const content = await readFile(path.join(__dirname, "..", "web", filename));
+    response.writeHead(200, { "Content-Type": filename.endsWith("html") ? "text/html" : filename.endsWith("css") ? "text/css" : "application/javascript" }).end(content);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  server.unref();
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
+  const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  const providers = ["monsieur_cuisine", "bring", "alexa", "homeassistant"].map((id) => ({ id, name: id, configured: id === "bring", connected: id === "bring", error: null, lists: id === "bring" ? [{ id: "bring-list", name: "Test-Einkauf" }] : [], last_test: null }));
+  const alexa = providers.find((provider) => provider.id === "alexa");
+  const status = { version: "0.2.0", mode: "standalone", providers, sync: { enabled: false, interval_seconds: 60, running: false, last_run: null, last_success: null, last_error: null, items_synced: 0 }, events: [] };
+  let settings = { enabled: false, interval_seconds: 60, targets: [], propagate_deletions: false };
+  let auth = { running: false, complete: false, error: null };
+  const starts = [];
+  const calls = [];
+  let releaseStart;
+  let receiveStart;
+  let startError = null;
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const endpoint = new URL(request.url()).pathname.slice((prefix + "api/").length);
+    const body = request.postDataJSON();
+    calls.push({ endpoint, method: request.method() });
+    const respond = (data, code = 200) => route.fulfill({ status: code, contentType: "application/json", body: JSON.stringify(data) });
+    if (endpoint === "session") return respond({ authenticated: true, setup_required: false, ingress: false });
+    if (endpoint === "status") return respond(status);
+    if (endpoint === "events") return respond([]);
+    if (endpoint === "settings") {
+      if (request.method() === "PUT") { settings = body; status.sync.enabled = body.enabled; status.sync.interval_seconds = body.interval_seconds; }
+      return respond(settings);
+    }
+    if (endpoint === "connections/alexa/auth/status") return respond(auth);
+    if (endpoint === "connections/alexa/auth/start") {
+      starts.push(body);
+      receiveStart?.();
+      if (startError) return respond({ detail: startError }, 400);
+      auth = { running: true, complete: false, error: null };
+      await new Promise((resolve) => { releaseStart = resolve; });
+      return respond({ running: true }, 202);
+    }
+    if (endpoint === "connections/alexa/test") return respond(alexa);
+    if (endpoint === "connections/alexa" && request.method() === "DELETE") {
+      assert.deepEqual(body, {});
+      alexa.connected = false; alexa.configured = false; alexa.lists = [];
+      auth = { running: false, complete: false, error: null };
+      status.sync.enabled = false;
+      return respond(alexa);
+    }
+    if (endpoint === "sync") return respond({ ok: true, added: 1, updated: 0, removed: 0, conflicts: 0, message: "Testabgleich abgeschlossen." });
+    return respond({ detail: "Unbekannte Testanfrage." }, 404);
+  });
+
+  async function fillAlexa(code = "123456") {
+    await page.locator("#alexa-email").fill("synthetic@example.invalid");
+    await page.locator("#alexa-password").fill("synthetic-alexa-password");
+    await page.locator("#alexa-code").fill(code);
+  }
+
+  try {
+    await page.goto(origin + prefix);
+    await page.locator("#last-refreshed").filter({ hasText: "Aktualisiert" }).waitFor();
+    assert.equal(await page.locator("#nav-connection-count").textContent(), "1/4");
+    const cards = await page.locator("[data-provider-card]").evaluateAll((elements) => elements.map((element) => ({ x: element.getBoundingClientRect().x, y: element.getBoundingClientRect().y })));
+    assert.equal(cards[0].y, cards[1].y);
+    assert.equal(cards[2].y, cards[3].y);
+    assert.ok(cards[2].y > cards[0].y, "Four provider cards should form two desktop rows");
+    await page.locator('[data-nav="connections"]').click();
+    assert.equal(await page.locator("#alexa-code").getAttribute("autocomplete"), "one-time-code");
+    assert.equal(await page.locator("#alexa-code").getAttribute("inputmode"), "numeric");
+    await fillAlexa("12345");
+    await page.locator("#alexa-auth-start").click();
+    assert.equal(starts.length, 0, "An incomplete Authenticator code must not be sent");
+    await page.locator("#alexa-code").fill("123456");
+    const firstStart = new Promise((resolve) => { receiveStart = resolve; });
+    await page.locator("#alexa-auth-start").click();
+    await firstStart;
+    assert.deepEqual(starts[0], { email: "synthetic@example.invalid", password: "synthetic-alexa-password", code: "123456" });
+    assert.equal(await page.locator("#alexa-password").inputValue(), "", "Password must clear before the POST response");
+    assert.equal(await page.locator("#alexa-code").inputValue(), "", "Code must clear before the POST response");
+    assert.equal(await page.locator("#alexa-auth-start").isDisabled(), true);
+    releaseStart();
+    await page.locator("#alexa-auth-message").filter({ hasText: "Anmeldung läuft" }).waitFor();
+    await page.reload();
+    await page.locator('[data-nav="connections"]').click();
+    await page.locator("#alexa-auth-message").filter({ hasText: "Anmeldung läuft" }).waitFor();
+    assert.equal(await page.locator("#alexa-auth-start").isDisabled(), true);
+    assert.equal(await page.locator("#alexa-password").inputValue(), "");
+    assert.equal(await page.locator("#alexa-code").inputValue(), "");
+    assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })), { local: 0, session: 0 });
+
+    await page.locator('[data-nav="lists"]').click();
+    await page.locator("#sync-interval").fill("90");
+    await page.locator("#list-bring").selectOption("bring-list");
+    alexa.configured = true; alexa.connected = true; alexa.lists = [{ id: "alexa-list", name: "Test-Alexa-Einkauf" }];
+    auth = { running: false, complete: true, error: null };
+    await page.locator('#list-alexa option[value="alexa-list"]').waitFor({ state: "attached" });
+    assert.equal(await page.locator("#sync-interval").inputValue(), "90", "Auth polling must preserve unsaved settings");
+    assert.equal(await page.locator("#list-bring").inputValue(), "bring-list");
+    assert.equal(await page.locator("#nav-connection-count").textContent(), "2/4");
+    await page.locator("#list-alexa").selectOption("alexa-list");
+    await page.locator("#sync-enabled").check();
+    await page.locator("#settings-save").click();
+    await page.locator("#toast-message").filter({ hasText: "eingeschaltet" }).waitFor();
+    assert.deepEqual(settings.targets, [{ provider: "bring", list_id: "bring-list" }, { provider: "alexa", list_id: "alexa-list" }]);
+    assert.equal(settings.interval_seconds, 90);
+    assert.equal(await page.locator('#view-lists [data-sync-button]').isDisabled(), false);
+    await page.locator('#view-lists [data-sync-button]').click();
+    await page.locator("#sync-result").filter({ hasText: "1 hinzugefügt" }).waitFor();
+    await page.locator('[data-nav="overview"]').click();
+    await page.locator("#toast-close").click();
+    await page.screenshot({ path: "/tmp/listenbruecke-alexa-overview.png", fullPage: true });
+
+    await page.locator('[data-nav="connections"]').click();
+    await page.locator('[data-test="alexa"]').click();
+    await page.locator("#toast-message").filter({ hasText: "Amazon Alexa: Verbindung erfolgreich" }).waitFor();
+    await fillAlexa();
+    const failedStart = new Promise((resolve) => { receiveStart = resolve; });
+    await page.locator("#alexa-auth-start").click();
+    await failedStart;
+    assert.equal(await page.locator("#alexa-password").inputValue(), "");
+    assert.equal(await page.locator("#alexa-code").inputValue(), "");
+    releaseStart();
+    auth = { running: false, complete: false, error: "Die Amazon-Anmeldung ist fehlgeschlagen. Bitte prüfe den Einmalcode." };
+    await page.locator("#alexa-auth-message").filter({ hasText: "fehlgeschlagen" }).waitFor();
+    assert.equal(await page.locator("#alexa-auth-start").isDisabled(), false);
+    assert.equal(await page.locator("#alexa-auth-notice").evaluate((element) => element.classList.contains("error")), true);
+
+    startError = "Die Anmeldung konnte nicht gestartet werden. Bitte erneut versuchen.";
+    await fillAlexa();
+    await page.locator("#alexa-auth-start").click();
+    await page.locator("#alexa-auth-message").filter({ hasText: "nicht gestartet" }).waitFor();
+    assert.equal(await page.locator("#alexa-password").inputValue(), "", "Password must also clear after a rejected start");
+    assert.equal(await page.locator("#alexa-code").inputValue(), "");
+    assert.equal(await page.locator("#alexa-auth-start").isDisabled(), false);
+    assert.notEqual(await page.locator('[data-provider-pill="alexa"]').textContent(), "Anmeldung läuft");
+    await page.locator('[data-disconnect="alexa"]').click();
+    await page.locator('[data-provider-pill="alexa"]').filter({ hasText: "Nicht eingerichtet" }).waitFor();
+    assert.equal(await page.locator("#alexa-auth-notice").isVisible(), false);
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      for (const view of ["overview", "connections", "lists"]) {
+        await page.locator(`[data-nav="${view}"]`).click();
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `${view} should fit ${width}px`);
+      }
+    }
+    assert.equal(calls.some((call) => call.endpoint === "connections/alexa/test"), true);
+    assert.deepEqual(browserErrors, []);
+  } finally {
+    releaseStart?.();
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
   }

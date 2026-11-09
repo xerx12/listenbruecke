@@ -4,10 +4,10 @@
   const PROVIDERS = [
     { id: "monsieur_cuisine", name: "Monsieur Cuisine", icon: "pot", className: "cuisine-icon", description: "Rezepte und Einkäufe aus deiner Küche." },
     { id: "bring", name: "Bring!", icon: "shopping", className: "bring-icon", description: "Gemeinsam planen. Gemeinsam einkaufen." },
+    { id: "alexa", name: "Amazon Alexa", icon: "alexa", className: "alexa-icon", description: "Deine Einkaufsliste per Sprache ergänzen." },
     { id: "homeassistant", name: "Home Assistant", icon: "home", className: "ha-icon", description: "Deine Einkaufsliste im smarten Zuhause." },
   ];
   const VIEWS = { overview: "Übersicht", connections: "Verbindungen", lists: "Listen & Abgleich", events: "Protokoll" };
-  const REQUIRED_PROVIDERS = ["monsieur_cuisine", "bring"];
   const state = {
     session: null,
     status: null,
@@ -18,6 +18,11 @@
     syncing: false,
     settingsDirty: false,
     toastTimer: null,
+    alexaAuth: { running: false, complete: false, error: null },
+    alexaSubmitting: false,
+    alexaPollBusy: false,
+    alexaPollTimer: null,
+    alexaAuthGeneration: 0,
   };
   const $ = (id) => document.getElementById(id);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -173,6 +178,68 @@
     }
     $$("input", $("ha-form")).forEach((input) => { input.disabled = addon; });
     $("logout").hidden = Boolean(state.session?.ingress);
+    renderAlexaAuth();
+  }
+
+  function renderAlexaAuth() {
+    const auth = state.alexaAuth;
+    const active = state.alexaSubmitting || auth.running;
+    const button = $("alexa-auth-start");
+    $$("input", $("alexa-form")).forEach((input) => { input.disabled = active; });
+    button.disabled = active;
+    button.querySelector("[data-label]").textContent = active ? "Anmeldung läuft …" : "Anmelden & verbinden";
+    if (active) button.setAttribute("aria-busy", "true");
+    else button.removeAttribute("aria-busy");
+    const notice = $("alexa-auth-notice");
+    notice.hidden = !active && !auth.complete && !auth.error;
+    notice.className = `notice alexa-auth-notice${auth.error ? " error" : auth.complete && !active ? " success" : ""}`;
+    notice.querySelector("use").setAttribute("href", auth.error ? "#icon-info" : auth.complete && !active ? "#icon-check" : "#icon-clock");
+    setText("alexa-auth-message", auth.error || (active ? "Die Amazon-Anmeldung läuft. Du kannst diese Seite neu laden; der Fortschritt wird wieder angezeigt." : auth.complete ? providerById("alexa")?.connected ? "Amazon Alexa ist verbunden. Du kannst deine Einkaufsliste auswählen." : "Amazon-Anmeldung abgeschlossen. Prüfe jetzt die Verbindung." : ""));
+    for (const control of $$('[data-test="alexa"], [data-disconnect="alexa"]')) {
+      if (!control.hasAttribute("aria-busy")) control.disabled = active || !providerById("alexa")?.configured;
+    }
+    const provider = providerById("alexa");
+    const info = active ? { label: "Anmeldung läuft", className: "pending" } : auth.error && !provider?.connected ? { label: "Anmeldung prüfen", className: "error" } : connectionState(provider);
+    setPill(document.querySelector('[data-provider-pill="alexa"]'), info);
+    const card = document.querySelector('[data-provider-card="alexa"]');
+    setPill(card.querySelector(".pill"), info);
+    card.querySelector(".provider-card-link span").textContent = active ? "Anmeldung ansehen" : provider?.connected ? "Verbindung ansehen" : provider?.configured ? "Verbindung prüfen" : "Jetzt verbinden";
+  }
+
+  function resetAlexaAuth() {
+    state.alexaAuthGeneration += 1;
+    clearTimeout(state.alexaPollTimer);
+    state.alexaPollTimer = null;
+    state.alexaSubmitting = false;
+    state.alexaAuth = { running: false, complete: false, error: null };
+  }
+
+  async function pollAlexaAuth({ quiet = false } = {}) {
+    if (!state.authenticated || state.alexaPollBusy || state.alexaSubmitting) return;
+    clearTimeout(state.alexaPollTimer);
+    state.alexaPollTimer = null;
+    state.alexaPollBusy = true;
+    const generation = state.alexaAuthGeneration;
+    const wasRunning = state.alexaAuth.running;
+    try {
+      const result = await api("connections/alexa/auth/status", { timeout: 15000 });
+      if (!state.authenticated || generation !== state.alexaAuthGeneration) return;
+      if (typeof result.running !== "boolean" || typeof result.complete !== "boolean" || !(result.error === null || typeof result.error === "string")) throw new Error("Der Anmeldestatus ist momentan nicht verfügbar. Bitte versuche es erneut.");
+      state.alexaAuth = { running: result.running, complete: result.complete, error: result.error };
+      renderAlexaAuth();
+      if (!result.running && (result.complete || result.error)) {
+        await refresh();
+        if (wasRunning && !quiet) toast(result.error || "Amazon-Anmeldung abgeschlossen.", Boolean(result.error));
+      }
+    } catch (error) {
+      if (state.authenticated && generation === state.alexaAuthGeneration && wasRunning) {
+        state.alexaAuth.error = "Der Anmeldestatus ist momentan nicht erreichbar. Listenbrücke prüft ihn erneut.";
+        renderAlexaAuth();
+      }
+    } finally {
+      state.alexaPollBusy = false;
+      if (state.authenticated && state.alexaAuth.running && !state.alexaSubmitting) state.alexaPollTimer = setTimeout(() => pollAlexaAuth(), 2000);
+    }
   }
 
   function selectedTargets() {
@@ -180,11 +247,11 @@
   }
 
   function hasTargets() {
-    return REQUIRED_PROVIDERS.every((id) => selectedTargets().some((target) => target.provider === id && target.list_id));
+    return selectedTargets().filter((target) => target.list_id).length >= 2;
   }
 
   function connectionsReady() {
-    return REQUIRED_PROVIDERS.every((id) => providerById(id)?.connected)
+    return PROVIDERS.filter((meta) => providerById(meta.id)?.connected).length >= 2
       && selectedTargets().every((target) => !target.list_id || providerById(target.provider)?.connected);
   }
 
@@ -194,13 +261,13 @@
     const enabled = Boolean(sync.enabled);
     const running = Boolean(sync.running);
     const ready = connectionsReady();
-    setText("nav-connection-count", `${connectedCount}/3`);
-    setText("setup-progress", `${connectedCount} von 3 verbunden`);
+    setText("nav-connection-count", `${connectedCount}/${PROVIDERS.length}`);
+    setText("setup-progress", `${connectedCount} von ${PROVIDERS.length} verbunden`);
     setText("app-version", state.status?.version ? `Version ${state.status.version}` : "Listenbrücke");
     setText("app-mode", state.status?.mode === "addon" || state.session?.ingress ? "HA-Add-on" : "Selbst gehostet");
     $("global-dot").className = `status-dot ${running ? "live" : sync.last_error ? "error" : enabled && ready ? "live" : ""}`;
     setText("global-status", running ? "Abgleich läuft" : enabled ? !ready ? "Verbindung fehlt" : sync.last_error ? "Abgleich prüfen" : "Abgleich aktiv" : "Abgleich pausiert");
-    setText("global-description", running ? "Deine Listen werden abgeglichen" : enabled ? `Prüfung alle ${sync.interval_seconds || 60} Sekunden` : `${connectedCount} von 3 Konten verbunden`);
+    setText("global-description", running ? "Deine Listen werden abgeglichen" : enabled ? `Prüfung alle ${sync.interval_seconds || 60} Sekunden` : `${connectedCount} von ${PROVIDERS.length} Konten verbunden`);
     setPill($("sync-pill"), { label: running ? "Läuft" : enabled ? sync.last_error ? "Hinweis" : "Aktiv" : "Pausiert", className: running ? "pending" : enabled ? sync.last_error ? "pending" : "success" : "neutral" });
     setText("last-run", dateTime(sync.last_run, "Noch kein Durchlauf"));
     setText("last-success", dateTime(sync.last_success));
@@ -215,7 +282,7 @@
     if (!ready) {
       setText("welcome-kicker", "DEINE LISTEN ZUSAMMENBRINGEN");
       $("welcome-title").replaceChildren(document.createTextNode("Einmal verbinden."), document.createElement("br"), document.createTextNode("Gemeinsam einkaufen."));
-      setText("welcome-description", "Verbinde Monsieur Cuisine und Bring!, wähle deine Listen und starte den automatischen Abgleich.");
+      setText("welcome-description", "Verbinde mindestens zwei Konten, wähle deine Einkaufslisten und starte den automatischen Abgleich.");
       button.replaceChildren(document.createTextNode("Verbindungen einrichten"), icon("arrow"));
       button.href = "#connections";
     } else if (!enabled) {
@@ -233,7 +300,7 @@
     }
     $$('[data-sync-button]').forEach((syncButton) => {
       syncButton.disabled = state.syncing || running || !ready || !hasTargets();
-      syncButton.title = running ? "Der Abgleich läuft bereits." : !ready ? "Verbinde zuerst Monsieur Cuisine und Bring! sowie weitere ausgewählte Konten." : !hasTargets() ? "Wähle zuerst deine Einkaufslisten aus und speichere die Einstellungen." : "Ausgewählte Listen jetzt abgleichen";
+      syncButton.title = running ? "Der Abgleich läuft bereits." : !ready ? "Verbinde mindestens zwei Konten und prüfe die ausgewählten Verbindungen." : !hasTargets() ? "Wähle mindestens zwei Einkaufslisten aus und speichere die Einstellungen." : "Ausgewählte Listen jetzt abgleichen";
     });
   }
 
@@ -246,15 +313,15 @@
       const chosenValue = applySettings ? configuredValue : state.settingsDirty ? select.value : select.value || configuredValue;
       const placeholder = document.createElement("option");
       placeholder.value = "";
-      const optional = meta.id === "homeassistant";
-      select.required = !optional;
-      placeholder.textContent = optional ? "Keine zusätzliche HA-Liste" : !provider?.connected ? "Zuerst Konto verbinden" : lists.length ? "Bitte Liste auswählen" : "Keine Liste gefunden";
+      select.required = false;
+      placeholder.textContent = meta.id === "homeassistant" ? "Keine zusätzliche HA-Liste" : "Nicht abgleichen";
       const options = [placeholder];
       for (const list of lists) {
         if (list.id === undefined || list.id === null) continue;
         const option = document.createElement("option");
         option.value = String(list.id);
         option.textContent = typeof list.name === "string" ? list.name : String(list.id);
+        option.disabled = !provider?.connected;
         options.push(option);
       }
       if (chosenValue && !options.some((option) => option.value === String(chosenValue))) {
@@ -266,10 +333,10 @@
       }
       select.replaceChildren(...options);
       select.value = String(chosenValue);
-      select.disabled = !provider?.connected || !lists.length;
+      select.disabled = !provider?.connected && !chosenValue;
     }
-    const ready = REQUIRED_PROVIDERS.every((id) => providerById(id)?.connected && providerById(id)?.lists?.length);
-    setText("list-readiness", ready ? "Wähle deine Listen für Monsieur Cuisine und Bring! aus. Eine zusätzliche Home-Assistant-Liste kannst du bei Bedarf ergänzen." : "Verbinde Monsieur Cuisine und Bring! und prüfe die Verbindungen, damit die verfügbaren Listen hier erscheinen.");
+    const ready = PROVIDERS.filter((meta) => providerById(meta.id)?.connected && providerById(meta.id)?.lists?.length).length >= 2;
+    setText("list-readiness", ready ? "Wähle mindestens zwei Listen aus. Die übrigen Dienste kannst du bei Bedarf ergänzen." : "Verbinde mindestens zwei Konten und prüfe die Verbindungen, damit ihre verfügbaren Listen hier erscheinen.");
     if (applySettings && state.settings) {
       $("sync-enabled").checked = Boolean(state.settings.enabled);
       $("sync-interval").value = state.settings.interval_seconds || 60;
@@ -327,13 +394,14 @@
   }
 
   function showAuth(session) {
+    resetAlexaAuth();
     state.session = session;
     state.authenticated = false;
     $("boot").hidden = true;
     $("app").hidden = true;
     $("auth-screen").hidden = false;
     $("auth-form").reset();
-    ["bring-form", "ha-form", "mc-auth-form"].forEach((id) => $(id).reset());
+    ["bring-form", "ha-form", "mc-auth-form", "alexa-form"].forEach((id) => $(id).reset());
     $("mc-auth-fallback").hidden = true;
     $("mc-auth-fallback").removeAttribute("href");
     $("auth-error").hidden = true;
@@ -359,6 +427,7 @@
     route();
     renderProviders();
     await refresh({ includeSettings: true });
+    await pollAlexaAuth({ quiet: true });
   }
 
   async function refresh({ includeSettings = false, quiet = false } = {}) {
@@ -484,6 +553,42 @@
 
   $("ha-auto-connect").addEventListener("click", (event) => busy(event.currentTarget, "Verbindung wird geprüft …", () => saveAndTest("homeassistant", { auto: true })));
 
+  $("alexa-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (state.alexaSubmitting || state.alexaAuth.running) return;
+    resetAlexaAuth();
+    const generation = state.alexaAuthGeneration;
+    const credentials = { email: $("alexa-email").value.trim(), password: $("alexa-password").value, code: $("alexa-code").value.trim() };
+    state.alexaSubmitting = true;
+    state.alexaAuth.running = true;
+    renderAlexaAuth();
+    const request = api("connections/alexa/auth/start", { method: "POST", body: credentials });
+    // The request body has been serialized. Keep no password or one-time code
+    // in the visible form while the background login is running.
+    $("alexa-password").value = "";
+    $("alexa-code").value = "";
+    credentials.password = "";
+    credentials.code = "";
+    try {
+      const result = await request;
+      if (generation !== state.alexaAuthGeneration || !state.authenticated) return;
+      if (result.running !== true) throw new Error("Die Amazon-Anmeldung konnte nicht gestartet werden. Bitte versuche es erneut.");
+    } catch (error) {
+      if (generation === state.alexaAuthGeneration && state.authenticated) {
+        state.alexaAuth = { running: false, complete: false, error: error.message };
+        toast(error.message, true);
+      }
+    } finally {
+      if (generation === state.alexaAuthGeneration) {
+        $("alexa-password").value = "";
+        $("alexa-code").value = "";
+        state.alexaSubmitting = false;
+        renderAlexaAuth();
+        if (state.alexaAuth.running) await pollAlexaAuth();
+      }
+    }
+  });
+
   $("mc-auth-start").addEventListener("click", async (event) => {
     const button = event.currentTarget;
     const newTab = window.open("about:blank", "_blank");
@@ -528,6 +633,7 @@
   $$('[data-disconnect]').forEach((button) => button.addEventListener("click", () => busy(button, "Zugang wird entfernt …", async () => {
     const id = button.dataset.disconnect;
     await api(`connections/${id}`, { method: "DELETE", body: {} });
+    if (id === "alexa") resetAlexaAuth();
     await refresh();
     toast("Der gespeicherte Zugang wurde entfernt.");
   })));
@@ -539,7 +645,8 @@
     await busy($("settings-save"), "Wird gespeichert …", async () => {
       const targets = PROVIDERS.map((meta) => ({ provider: meta.id, list_id: $("list-" + meta.id).value })).filter((target) => target.list_id);
       const enabled = $("sync-enabled").checked;
-      if (enabled && (!REQUIRED_PROVIDERS.every((id) => targets.some((target) => target.provider === id) && providerById(id)?.connected) || !targets.every((target) => providerById(target.provider)?.connected))) throw new Error("Verbinde zuerst Monsieur Cuisine und Bring! und wähle für beide eine Einkaufsliste aus. Prüfe auch weitere ausgewählte Konten.");
+      if (enabled && targets.length < 2) throw new Error("Wähle mindestens zwei Einkaufslisten aus, um den automatischen Abgleich einzuschalten.");
+      if (!targets.every((target) => providerById(target.provider)?.connected)) throw new Error("Prüfe zuerst die ausgewählten Verbindungen oder nimm deren Listen aus dem Abgleich.");
       const settings = { enabled, interval_seconds: Number($("sync-interval").value), targets, propagate_deletions: $("sync-deletions").checked };
       await api("settings", { method: "PUT", body: settings });
       state.settings = settings;
