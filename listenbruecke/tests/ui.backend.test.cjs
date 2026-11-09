@@ -108,14 +108,34 @@ test("actual API: setup/login, fake providers, synchronization, disconnect and C
     assert.equal(await page.locator("#bring-password").inputValue(), "");
     assert.equal((await (await page.request.get(origin + "/api/status")).text()).includes("synthetic-bring-password"), false);
 
+    await page.locator("#alexa-email").fill("synthetic@example.invalid");
+    await page.locator("#alexa-password").fill("synthetic-alexa-password");
+    await page.locator("#alexa-code").fill("123456");
+    const alexaStarted = page.waitForResponse((result) => result.url() === origin + "/api/connections/alexa/auth/start" && result.request().method() === "POST");
+    await page.locator("#alexa-auth-start").click();
+    assert.equal((await alexaStarted).status(), 202);
+    assert.equal(await page.locator("#alexa-password").inputValue(), "");
+    assert.equal(await page.locator("#alexa-code").inputValue(), "");
+    await page.locator("#alexa-auth-message").filter({ hasText: "Anmeldung läuft" }).waitFor();
+    await page.reload();
+    await page.locator("#alexa-auth-message").filter({ hasText: "Anmeldung läuft" }).waitFor();
+    await page.locator('[data-provider-pill="alexa"]').filter({ hasText: "Verbunden" }).waitFor();
+    assert.equal(await page.locator("#alexa-password").inputValue(), "");
+    assert.equal(await page.locator("#alexa-code").inputValue(), "");
+    const alexaStatus = await (await page.request.get(origin + "/api/connections/alexa/auth/status")).json();
+    assert.deepEqual(alexaStatus, { running: false, complete: true, error: null });
+    await page.locator('[data-disconnect="monsieur_cuisine"]').click();
+    await page.locator('[data-provider-pill="monsieur_cuisine"]').filter({ hasText: "Nicht eingerichtet" }).waitFor();
+
     await page.locator('[data-nav="lists"]').click();
-    await page.locator("#list-monsieur_cuisine").selectOption("monsieur_cuisine-synthetic-list");
     await page.locator("#list-bring").selectOption("bring-synthetic-list");
+    await page.locator("#list-alexa").selectOption("alexa-synthetic-list");
     await page.locator("#sync-enabled").check();
     await page.locator("#settings-save").click();
     await page.locator("#toast-message").filter({ hasText: "eingeschaltet" }).waitFor();
     const settings = await (await page.request.get(origin + "/api/settings")).json();
     assert.equal(settings.targets.length, 2);
+    assert.deepEqual(settings.targets.map((target) => target.provider), ["bring", "alexa"]);
     assert.equal(settings.enabled, true);
     assert.equal(settings.propagate_deletions, false);
     const syncResponse = page.waitForResponse((result) => result.url() === origin + "/api/sync" && result.request().method() === "POST");
@@ -144,12 +164,20 @@ test("actual API: setup/login, fake providers, synchronization, disconnect and C
     }
 
     await page.locator('[data-nav="connections"]').click();
-    const disconnected = page.waitForResponse((result) => result.url() === origin + "/api/connections/bring" && result.request().method() === "DELETE");
-    await page.locator('[data-disconnect="bring"]').click();
+    await page.locator("#alexa-email").fill("synthetic@example.invalid");
+    await page.locator("#alexa-password").fill("synthetic-rejected-password");
+    await page.locator("#alexa-code").fill("654321");
+    await page.locator("#alexa-auth-start").click();
+    await page.locator("#alexa-auth-message").filter({ hasText: "fehlgeschlagen" }).waitFor();
+    assert.equal(await page.locator("#alexa-password").inputValue(), "");
+    assert.equal(await page.locator("#alexa-code").inputValue(), "");
+    assert.equal(await page.locator("#alexa-auth-start").isDisabled(), false);
+    const disconnected = page.waitForResponse((result) => result.url() === origin + "/api/connections/alexa" && result.request().method() === "DELETE");
+    await page.locator('[data-disconnect="alexa"]').click();
     assert.equal((await disconnected).status(), 200);
-    await page.locator('[data-provider-pill="bring"]').filter({ hasText: "Nicht eingerichtet" }).waitFor();
+    await page.locator('[data-provider-pill="alexa"]').filter({ hasText: "Nicht eingerichtet" }).waitFor();
     status = await (await page.request.get(origin + "/api/status")).json();
-    assert.equal(status.providers.find((provider) => provider.id === "bring").configured, false);
+    assert.equal(status.providers.find((provider) => provider.id === "alexa").configured, false);
     assert.equal(status.sync.enabled, false);
 
     await page.locator("#logout").click();

@@ -28,7 +28,7 @@ from listenbruecke.models import ConnectorError
 from listenbruecke.store import Store, now
 from listenbruecke.sync import SyncEngine
 
-PROVIDERS = {"bring": "Bring!", "monsieur_cuisine": "Monsieur Cuisine", "homeassistant": "Home Assistant"}
+PROVIDERS = {"bring": "Bring!", "monsieur_cuisine": "Monsieur Cuisine", "homeassistant": "Home Assistant", "alexa": "Alexa"}
 DEFAULT_SETTINGS = {"enabled": False, "interval_seconds": 60, "targets": [], "propagate_deletions": False}
 COOKIE = "listenbruecke_session"
 
@@ -48,6 +48,8 @@ class Service:
         self.lock = asyncio.Lock()
         self.wakeup = asyncio.Event()
         self.manual_task = None
+        self.alexa_auth_task = None
+        self.alexa_auth_status = {"running": False, "complete": False, "error": None}
         self._sync_running = False
         self.restore_pending = False
         self.mode = "addon" if os.environ.get("SUPERVISOR_TOKEN") else "standalone"
@@ -76,7 +78,7 @@ class Service:
                 "providers": [self.provider(p) for p in PROVIDERS],
                 "sync": {**self.settings(), "last_run": None, "last_success": None,
                          "last_error": None, "items_synced": 0, **metrics,
-                         "running": self.sync_running()},
+                         "running": self._sync_running or bool(self.manual_task and not self.manual_task.done())},
                 "events": self.store.events(12)}
 
     async def connector(self, provider):
@@ -93,12 +95,19 @@ class Service:
         elif provider == "homeassistant":
             from listenbruecke.connectors.homeassistant import HomeAssistantConnector
             client = HomeAssistantConnector(self.http, credentials["url"], credentials["token"])
-        else:
+        elif provider == "alexa":
+            from listenbruecke.connectors.alexa import AlexaConnector
+            async def save(value):
+                self.store.set_secret("alexa", self.validate_alexa_credentials(value))
+            client = AlexaConnector(credentials, save)
+        elif provider == "monsieur_cuisine":
             from listenbruecke.connectors.mc_auth import MCAuth
             from listenbruecke.connectors.monsieur import MonsieurConnector
             async def save(value):
                 self.store.set_secret("monsieur_cuisine", value)
             client = MonsieurConnector(MCAuth(self.http, credentials, save))
+        else:
+            raise ConnectorError("Diese Verbindung ist nicht bekannt.")
         self.clients[provider] = client
         return client
 
@@ -115,7 +124,25 @@ class Service:
         self.store.set("sync_settings", settings)
         self.store.set("account_generation", self.store.get("account_generation", 0) + 1)
 
-    def safe_error(self, error):
+    @staticmethod
+    def validate_alexa_credentials(value):
+        if (not isinstance(value, dict) or set(value) != {"email", "login_data"}
+                or not isinstance(value["email"], str) or not value["email"]
+                or not isinstance(value["login_data"], dict) or not value["login_data"]):
+            raise ConnectorError("Die Amazon-Anmeldung konnte nicht sicher gespeichert werden. Bitte erneut anmelden.")
+        def contains_login_input(data):
+            if isinstance(data, dict):
+                return any(str(key).casefold() in {"password", "code", "otp", "otp_secret", "mfa_seed", "totp_secret"}
+                           or contains_login_input(item) for key, item in data.items())
+            return isinstance(data, list) and any(contains_login_input(item) for item in data)
+        if contains_login_input(value["login_data"]):
+            raise ConnectorError("Die Amazon-Anmeldung konnte nicht sicher gespeichert werden. Bitte erneut anmelden.")
+        # Only the completed session is accepted, never the submitted login form.
+        return {"email": value["email"], "login_data": json.loads(json.dumps(value["login_data"]))}
+
+    def safe_error(self, error, *, provider=None):
+        if provider == "alexa":
+            return "Die Alexa-Verbindung konnte nicht geprüft werden. Bitte die Amazon-Anmeldung erneut durchführen."
         message = str(error)
         for provider in PROVIDERS:
             credentials = self.credentials(provider) or {}
@@ -123,6 +150,15 @@ class Service:
                 value = credentials.get(key)
                 if isinstance(value, str) and value and value in message:
                     return "Die Verbindung konnte nicht geprüft werden. Bitte Einstellungen und Erreichbarkeit prüfen."
+        def contains_session_value(value):
+            if isinstance(value, dict):
+                return any(contains_session_value(item) for item in value.values())
+            if isinstance(value, list):
+                return any(contains_session_value(item) for item in value)
+            return isinstance(value, str) and len(value) >= 4 and value in message
+        alexa = self.credentials("alexa") or {}
+        if contains_session_value(alexa.get("login_data", {})):
+            return "Die Alexa-Verbindung konnte nicht geprüft werden. Bitte die Amazon-Anmeldung erneut durchführen."
         return message
 
     async def test(self, provider):
@@ -132,7 +168,7 @@ class Service:
             status = {"connected": True, "error": None, "lists": [x.to_dict() for x in lists], "last_test": now()}
             self.store.event("success", PROVIDERS[provider] + ": Verbindung erfolgreich geprüft.")
         except ConnectorError as exc:
-            status = {"connected": False, "error": self.safe_error(exc), "lists": [], "last_test": now()}
+            status = {"connected": False, "error": self.safe_error(exc, provider=provider), "lists": [], "last_test": now()}
             self.store.event("error", PROVIDERS[provider] + ": Verbindungstest fehlgeschlagen.")
         except Exception:
             status = {"connected": False, "error": "Die Verbindung konnte nicht geprüft werden. Bitte Einstellungen und Erreichbarkeit prüfen.", "lists": [], "last_test": now()}
@@ -142,7 +178,7 @@ class Service:
         return self.provider(provider)
 
     async def synchronize(self):
-        if self.lock.locked():
+        if self.lock.locked() or self.alexa_auth_running():
             raise ConnectorError("Ein Verbindungs- oder Synchronisierungsvorgang läuft bereits.")
         async with self.lock:
             self._sync_running = True
@@ -152,6 +188,7 @@ class Service:
             self.store.set("sync_metrics", metrics)
             try:
                 clients = {t["provider"]: await self.connector(t["provider"]) for t in settings["targets"]}
+                await self.validate_target_mirrors(settings["targets"], clients)
                 result = await SyncEngine(self.store).run(settings["targets"], clients,
                     propagate_deletions=settings["propagate_deletions"])
                 # A complete reconciliation also verifies every selected source.
@@ -181,11 +218,62 @@ class Service:
                 self._sync_running = False
                 self.store.set("sync_metrics", metrics)
 
+    def alexa_auth_running(self):
+        return bool(self.alexa_auth_task and not self.alexa_auth_task.done())
+
     def sync_running(self):
-        return self._sync_running or bool(self.manual_task and not self.manual_task.done())
+        return self._sync_running or bool(self.manual_task and not self.manual_task.done()) or self.alexa_auth_running()
+
+    async def validate_target_mirrors(self, targets, clients=None):
+        selected = {target["provider"] for target in targets}
+        if not {"alexa", "homeassistant"} <= selected:
+            return
+        client = clients["homeassistant"] if clients is not None else await self.connector("homeassistant")
+        check = getattr(client, "check_independent_source", None)
+        if check is None:
+            raise ConnectorError("Die Herkunft der Home-Assistant-Liste konnte nicht geprüft werden. Bitte die Verbindung erneut testen.")
+        target = next(target for target in targets if target["provider"] == "homeassistant")
+        await check(target["list_id"], selected)
+
+    def start_alexa_login(self, email, password, code):
+        if self.restore_pending:
+            raise HTTPException(409, "Die Wiederherstellung wartet auf den Neustart der App.")
+        if self.lock.locked() or self.sync_running():
+            raise HTTPException(409, "Ein Vorgang läuft bereits. Bitte anschließend erneut anmelden.")
+        self.alexa_auth_status = {"running": True, "complete": False, "error": None}
+        transient = {"email": email, "password": password, "code": code}
+
+        async def perform():
+            try:
+                async with self.lock:
+                    from listenbruecke.connectors.alexa import AlexaConnector
+                    value = await asyncio.wait_for(AlexaConnector.login(**transient), timeout=90)
+                    credentials = self.validate_alexa_credentials(value)
+                    transient.clear()
+                    self.disable_for_change()
+                    await self.forget_client("alexa")
+                    self.store.set_secret("alexa", credentials)
+                    result = await self.test("alexa")
+                    if not result["connected"]:
+                        self.alexa_auth_status["error"] = result["error"]
+                    self.alexa_auth_status["complete"] = result["connected"]
+            except asyncio.CancelledError:
+                self.alexa_auth_status["error"] = "Die Amazon-Anmeldung wurde abgebrochen. Bitte erneut starten."
+                raise
+            except Exception:
+                self.alexa_auth_status["error"] = "Die Amazon-Anmeldung ist fehlgeschlagen oder abgelaufen. Bitte Passwort und aktuellen Einmalcode prüfen und erneut versuchen."
+                self.store.event("error", "Alexa: Amazon-Anmeldung fehlgeschlagen.")
+            finally:
+                transient.clear()
+                self.alexa_auth_status["running"] = False
+                self.wakeup.set()
+
+        self.alexa_auth_task = asyncio.create_task(perform())
 
     @asynccontextmanager
     async def configure(self):
+        if self.restore_pending:
+            raise HTTPException(409, "Die Wiederherstellung wartet auf den Neustart der App.")
         if self.lock.locked() or self.sync_running():
             raise HTTPException(409, "Ein Abgleich oder Verbindungstest läuft. Bitte danach erneut versuchen.")
         async with self.lock:
@@ -218,6 +306,10 @@ class Service:
                 pass
 
     async def close(self):
+        if self.alexa_auth_task and not self.alexa_auth_task.done():
+            self.alexa_auth_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self.alexa_auth_task
         if self.manual_task and not self.manual_task.done():
             self.manual_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -429,6 +521,8 @@ def create_app(data_dir=None, *, factory=None, background=True):
         check_provider(provider)
         if provider == "monsieur_cuisine":
             raise HTTPException(400, "Bitte die Browseranmeldung bei Lidl verwenden.")
+        if provider == "alexa":
+            raise HTTPException(400, "Bitte die Amazon-Anmeldung mit Passwort und aktuellem Einmalcode verwenden.")
         if provider == "bring":
             if (set(data) != {"email", "password"} or not isinstance(data.get("email"), str)
                     or "@" not in data["email"] or len(data["email"]) > 320
@@ -466,6 +560,8 @@ def create_app(data_dir=None, *, factory=None, background=True):
             service.disable_for_change()
             await service.forget_client(provider)
             service.store.delete_secret(provider)
+            if provider == "alexa":
+                service.alexa_auth_status = {"running": False, "complete": False, "error": None}
         return service.provider(provider)
 
     @app.post("/api/connections/{provider}/test")
@@ -480,6 +576,21 @@ def create_app(data_dir=None, *, factory=None, background=True):
         flow = MCAuth.start_login()
         app.state.service.store.set_secret("oauth:" + flow["state"], {"verifier": flow["verifier"], "expires": time.time() + 600})
         return {"authorization_url": flow["authorization_url"]}
+
+    @app.post("/api/connections/alexa/auth/start")
+    async def start_alexa_login(data: dict):
+        if (set(data) != {"email", "password", "code"}
+                or not isinstance(data.get("email"), str) or "@" not in data["email"] or len(data["email"]) > 320
+                or not isinstance(data.get("password"), str) or not 1 <= len(data["password"]) <= 1024
+                or not isinstance(data.get("code"), str) or len(data["code"].strip()) != 6
+                or not data["code"].strip().isascii() or not data["code"].strip().isdigit()):
+            raise HTTPException(400, "Bitte E-Mail, Passwort und den aktuellen sechsstelligen Amazon-Einmalcode eingeben.")
+        app.state.service.start_alexa_login(data["email"].strip(), data["password"], data["code"].strip())
+        return JSONResponse({"running": True}, status_code=202)
+
+    @app.get("/api/connections/alexa/auth/status")
+    async def alexa_login_status():
+        return dict(app.state.service.alexa_auth_status)
 
     @app.post("/api/connections/monsieur_cuisine/auth/complete")
     async def complete_mc_login(data: dict):
@@ -525,7 +636,7 @@ def create_app(data_dir=None, *, factory=None, background=True):
         settings = {**DEFAULT_SETTINGS, **data}
         if (type(settings["enabled"]) is not bool or type(settings["propagate_deletions"]) is not bool
                 or type(settings["interval_seconds"]) is not int or not 30 <= settings["interval_seconds"] <= 3600
-                or not isinstance(settings["targets"], list) or len(settings["targets"]) > 3):
+                or not isinstance(settings["targets"], list) or len(settings["targets"]) > len(PROVIDERS)):
             raise HTTPException(400, "Bitte ein Intervall zwischen 30 und 3600 Sekunden und gültige Listen auswählen.")
         providers = set()
         service = app.state.service
@@ -544,6 +655,7 @@ def create_app(data_dir=None, *, factory=None, background=True):
                     raise HTTPException(400, "Die ausgewählte Liste ist nicht verfügbar oder bereits über einen anderen Anbieter eingebunden.")
             if settings["enabled"] and len(settings["targets"]) < 2:
                 raise HTTPException(400, "Für den automatischen Abgleich mindestens zwei Listen auswählen.")
+            await service.validate_target_mirrors(settings["targets"])
             service.store.set("sync_settings", settings)
             service.store.event("info", "Automatischer Abgleich aktiviert." if settings["enabled"] else "Einstellungen gespeichert; automatischer Abgleich pausiert.")
             service.wakeup.set()

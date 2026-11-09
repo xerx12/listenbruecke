@@ -5,7 +5,7 @@
 <h1 align="center">Deine Listen. Ein Einkauf.</h1>
 
 <p align="center">
-  <strong>Listenbrücke verbindet Monsieur Cuisine, Bring! und Home Assistant.</strong><br>
+  <strong>Listenbrücke verbindet Monsieur Cuisine, Bring!, Amazon Alexa und Home Assistant.</strong><br>
   Selbst gehostet. Mit deutscher Oberfläche. Als Home-Assistant-App oder mit Docker.
 </p>
 
@@ -18,7 +18,7 @@
 
 <p align="center">
   <a href="https://github.com/xerx12/listenbruecke/actions/workflows/tests.yml"><img src="https://github.com/xerx12/listenbruecke/actions/workflows/tests.yml/badge.svg" alt="Automatisierte Tests"></a>
-  &nbsp; <strong>v0.1.0 · experimentell</strong> &nbsp; · &nbsp; <a href="LICENSE">MIT-Lizenz</a>
+  &nbsp; <strong>v0.2.0 · experimentell</strong> &nbsp; · &nbsp; <a href="LICENSE">MIT-Lizenz</a>
 </p>
 
 ![Listenbrücke: Übersicht der Verbindungen und des Abgleichs, ohne persönliche Kontodaten](docs/assets/interface.png)
@@ -27,12 +27,12 @@
 
 ## Was Listenbrücke kann
 
-Das Rezept liegt in Monsieur Cuisine, die Einkaufsliste in Bring! und das Zuhause
-läuft mit Home Assistant. Listenbrücke gleicht die ausgewählten Listen regelmäßig
+Das Rezept liegt in Monsieur Cuisine, die Einkaufsliste in Bring!, Alexa nimmt
+deine Zurufe entgegen und das Zuhause läuft mit Home Assistant. Listenbrücke gleicht die ausgewählten Listen regelmäßig
 ab, damit du Einträge und Abhakstatus zusammenhalten kannst.
 
 - **Konten verbinden und testen:** Bring!-Anmeldung, Lidl-Anmeldung im eigenen
-  Browser und optionale Verbindung zu einer getrennten Home-Assistant-Liste.
+  Browser, Amazon-Anmeldung mit Authenticator-Code und eine getrennte Home-Assistant-Liste.
 - **Artikel und Mengen erhalten:** Namen und Mengen werden als Text abgeglichen.
   Verschiedene Mengen und mehrfach vorkommende Zutaten bleiben unterscheidbar.
 - **Abhaken und wieder öffnen:** Der Status bekannter Einträge wird beim nächsten
@@ -46,11 +46,12 @@ ab, damit du Einträge und Abhakstatus zusammenhalten kannst.
 
 Eine Bring!-Liste, die bereits in Home Assistant angezeigt wird, ist dieselbe Liste.
 Sie wird nicht zusätzlich als unabhängige HA-Liste verbunden. **Eine eigene lokale
-Home-Assistant-Liste ist optional**; Monsieur Cuisine und Bring! reichen aus.
+Home-Assistant-Liste ist optional**. Du kannst beliebige zwei bis vier Anbieter
+verbinden, etwa Bring! und Alexa. Pro Anbieter wird eine Liste abgeglichen.
 
 ## Stand
 
-**Version 0.1.0 ist experimentell.** Tests prüfen die Anbieter-Anbindungen und den
+**Version 0.2.0 ist experimentell.** Tests prüfen die Anbieter-Anbindungen und den
 Abgleich mit simulierten Antworten sowie die echte lokale Weboberfläche mit
 synthetischen Konten. Anmeldung und vollständiger Abgleich müssen zusätzlich mit
 den eigenen Konten geprüft werden. Die inoffiziellen Anbieter-Schnittstellen können
@@ -60,15 +61,15 @@ Bei **Monsieur-Cuisine-Rezeptzutaten** wird ausschließlich der Erledigt-Status
 zurückgeschrieben. Namen, Mengen und einzelne Löschungen dieser Zutaten sind
 geschützt. Freie Einträge unterstützen Anlegen, Ändern, Abhaken und Löschen.
 
-| Funktion | Bring! | MC: freie Einträge | MC: Rezeptzutaten | Eigene HA-Liste |
-| --- | --- | --- | --- | --- |
-| Lesen | ✓ | ✓ | ✓ | ✓ |
-| Anlegen | ✓ | ✓ | – | ✓ |
-| Name und Mengenangabe ändern | ✓ | ✓ | geschützt | ✓¹ |
-| Abhaken / wieder öffnen | ✓ | ✓ | ✓ | ✓ |
-| Einzelnen Eintrag löschen² | ✓ | ✓ | geschützt | ✓ |
+| Funktion | Bring! | MC: freie Einträge | MC: Rezeptzutaten | Alexa | Eigene HA-Liste |
+| --- | --- | --- | --- | --- | --- |
+| Lesen | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Anlegen | ✓ | ✓ | – | ✓ | ✓ |
+| Name und Mengenangabe ändern | ✓ | ✓ | geschützt | ✓¹ | ✓¹ |
+| Abhaken / wieder öffnen | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Einzelnen Eintrag löschen² | ✓ | ✓ | geschützt | ✓ | ✓ |
 
-¹ In einer nativen HA-Einkaufsliste steht die Mengenangabe im Artikeltext.
+¹ In Alexa und einer nativen HA-Einkaufsliste steht die Mengenangabe im Artikeltext.
 ² Übergreifendes Löschen muss ausdrücklich eingeschaltet werden.
 
 ## Installation
@@ -123,9 +124,14 @@ sichere Sitzungscookies. Standardmäßig sind lokale Adressen erlaubt.
    entpackte Chrome-/Edge-Erweiterung installieren. **Mit Lidl anmelden** öffnen,
    die Anmeldung direkt bei Lidl abschließen und das Anmeldeergebnis des Helfers
    in die eigene App einfügen. Anmeldecodes niemals in Issues oder Chats teilen.
-3. **Home Assistant:** Im Add-on über den Supervisor verfügbar. Im Docker-Betrieb
+3. **Amazon Alexa:** In Listenbrücke Amazon-E-Mail, Passwort und einen aktuellen
+   sechsstelligen Authenticator-Code eingeben. Amazon benötigt die Zwei-Schritt-
+   Verifizierung mit Authenticator-App. Passwort und Einmalcode werden nur für
+   diese Anmeldung verwendet; gespeichert wird die verschlüsselte Sitzung.
+   Eine zusätzliche Alexa-Integration in Home Assistant ist dafür nicht nötig.
+4. **Home Assistant:** Im Add-on über den Supervisor verfügbar. Im Docker-Betrieb
    kann bei Bedarf eine Instanz-URL mit Zugriffstoken eingetragen werden.
-4. **Listen & Abgleich:** Gewünschte Listen auswählen, Intervall festlegen und
+5. **Listen & Abgleich:** Mindestens zwei gewünschte Listen auswählen, Intervall festlegen und
    speichern. Danach den automatischen Abgleich aktivieren.
 
 Weitere Einrichtung, Fehlerbehebung und Backups: [Dokumentation](listenbruecke/DOCS.md).
@@ -154,14 +160,14 @@ Geschützte Rezeptzutaten werden niemals durch Entfernen des gesamten Rezepts ge
 - Für Backups immer **Datenbank und Schlüssel zusammen** sichern.
 - Das lokale Oberfläche-Passwort wird mit gesalzenem Scrypt gehasht; Sitzungen nutzen
   HttpOnly-Cookies. API-Antworten enthalten keine gespeicherten Passwörter oder Tokens.
-- Bring! und Monsieur Cuisine benötigen weiterhin die Cloud-Dienste der Anbieter.
+- Bring!, Monsieur Cuisine und Alexa benötigen weiterhin die Cloud-Dienste der Anbieter.
   Es gibt keinen zusätzlichen Listenbrücke-Cloud-Dienst.
 - Reale Konten, Tokens, App-Daten und lokale Laufzeitdateien gehören nicht in Git
   oder öffentliche Fehlerberichte.
 
 ## Entwicklung
 
-Voraussetzungen: **Python ≥ 3.12**; für Browserprüfungen zusätzlich Node.js.
+Voraussetzungen: **Python ≥ 3.13**; für Browserprüfungen zusätzlich Node.js.
 
 ```sh
 python3 -m venv .venv
@@ -188,5 +194,5 @@ und synthetische Beispieldaten veröffentlichen.
 [Drittanbieter-Hinweisen](listenbruecke/THIRD_PARTY_LICENSES.md).
 
 **Inoffiziell:** Keine Verbindung, Unterstützung oder Empfehlung durch Bring! Labs,
-Lidl, Monsieur Cuisine, Tecpal oder Home Assistant. Produktnamen gehören ihren
+Lidl, Monsieur Cuisine, Tecpal, Amazon oder Home Assistant. Produktnamen gehören ihren
 jeweiligen Inhabern.

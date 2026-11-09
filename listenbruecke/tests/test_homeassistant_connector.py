@@ -213,3 +213,27 @@ async def test_registry_failure_is_not_an_empty_origin_map(monkeypatch):
         with pytest.raises(ConnectorError, match="Herkunft"):
             await connector.list_lists()
         assert not connector.origins_resolved
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform", ["alexa_devices", "alexa_todo_lists"])
+async def test_alexa_mirror_is_allowed_through_ha_alone_but_blocked_with_direct_alexa(setup, platform):
+    connector, backend = setup
+    connector.origins["todo.alexa_list"] = platform
+    original = backend.entity
+    backend.entity = lambda: {**original(), "entity_id": "todo.alexa_list"}
+    assert "todo.alexa_list" in {row.id for row in await connector.list_lists()}
+    await connector.check_independent_source("todo.alexa_list", {"bring", "homeassistant"})
+    with pytest.raises(UnsupportedOperation, match="dieselbe Alexa-Liste"):
+        await connector.check_independent_source("todo.alexa_list", {"alexa", "homeassistant"})
+    # Registry identity protects even empty lists, without comparing item IDs.
+    backend.rows = []
+    with pytest.raises(UnsupportedOperation):
+        await connector.check_independent_source("todo.alexa_list", {"alexa", "homeassistant"})
+
+
+@pytest.mark.asyncio
+async def test_independent_source_check_fails_closed_for_unknown_origin(setup):
+    connector, _ = setup
+    with pytest.raises(ConnectorError, match="Herkunft"):
+        await connector.check_independent_source("todo.unregistered", {"alexa", "homeassistant"})
