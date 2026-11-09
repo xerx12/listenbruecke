@@ -1,0 +1,13 @@
+{
+  "name": "listenbruecke-ui-checks",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser checks for the buildless Listenbrücke interface",
+  "scripts": {
+    "test:ui": "node --test tests/ui.test.cjs",
+    "test:ui:backend": "node --test tests/ui.backend.test.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}

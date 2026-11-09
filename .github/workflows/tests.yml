@@ -1,0 +1,174 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, "codex/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  python:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    defaults:
+      run:
+        working-directory: listenbruecke
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            listenbruecke/requirements.lock
+            listenbruecke/pyproject.toml
+      - name: Install pinned runtime and test dependencies
+        run: |
+          python -m pip install -r requirements.lock
+          python -m pip install '.[test]'
+          python -m pip check
+      - name: Verify installed package includes public assets and license notice
+        run: |
+          python - <<'PY'
+          from importlib.resources import files
+
+          package = files("listenbruecke")
+          for name in ("web/index.html", "web/app.js", "web/styles.css",
+                       "browser-helper/manifest.json", "THIRD_PARTY_LICENSES.md"):
+              assert package.joinpath(name).is_file(), f"Missing package asset: {name}"
+          PY
+      - name: Run Python tests against the installed package
+        run: python -m pytest -q tests
+
+  browser:
+    name: Browser and login helper
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: listenbruecke
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            listenbruecke/requirements.lock
+            listenbruecke/pyproject.toml
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: listenbruecke/package-lock.json
+      - name: Install app and browser dependencies
+        run: |
+          python -m pip install -r requirements.lock
+          python -m pip install --no-deps .
+          npm ci
+          npm exec -- playwright install --with-deps chromium
+      - name: Test browser login helper with synthetic redirects
+        run: node --test tests/test_browser_helper.cjs
+      - name: Test interface with mocked provider responses
+        run: npm run test:ui
+      - name: Test browser against real local API and synthetic providers
+        env:
+          LISTENBRUECKE_TEST_PYTHON: python
+        run: npm run test:ui:backend
+
+  container:
+    name: Container ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            platform: linux/amd64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build local container image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./listenbruecke
+          platforms: ${{ matrix.platform }}
+          tags: listenbruecke:ci
+          load: true
+          push: false
+      - name: Smoke test startup, public assets and process privileges
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --detach --name listenbruecke-ci \
+            --publish 127.0.0.1:8099:8099 \
+            --security-opt no-new-privileges:true \
+            --cap-drop ALL --cap-add CHOWN --cap-add SETUID --cap-add SETGID \
+            listenbruecke:ci >/dev/null
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:8099/healthz >/dev/null; then
+              break
+            fi
+            if [ "$(docker inspect --format '{{.State.Running}}' listenbruecke-ci)" != "true" ]; then
+              docker logs listenbruecke-ci
+              exit 1
+            fi
+            sleep 2
+          done
+          if ! curl --fail --silent http://127.0.0.1:8099/healthz >/dev/null; then
+            docker logs listenbruecke-ci
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          from urllib.request import urlopen
+
+          base = "http://127.0.0.1:8099"
+          with urlopen(base + "/healthz", timeout=5) as response:
+              assert json.load(response)["status"] == "ok"
+          with urlopen(base + "/api/session", timeout=5) as response:
+              session = json.load(response)
+              assert session["setup_required"] and not session["authenticated"]
+          with urlopen(base + "/", timeout=5) as response:
+              assert "Listenbrücke" in response.read().decode()
+          PY
+          docker exec --user 1000:1000 listenbruecke-ci python -c '
+          from pathlib import Path
+          status = Path("/proc/1/status").read_text()
+          uid = next(line.split()[1:] for line in status.splitlines() if line.startswith("Uid:"))
+          assert uid == ["1000"] * 4, "Application process must run as UID 1000"
+          gid = next(line.split()[1:] for line in status.splitlines() if line.startswith("Gid:"))
+          assert gid == ["1000"] * 4, "Application process must run as GID 1000"
+          assert Path("/data/encryption.key").stat().st_mode & 0o777 == 0o600
+          assert Path("/data/app.sqlite3").stat().st_mode & 0o777 == 0o600
+          '
+      - name: Remove test container
+        if: always()
+        run: docker rm --force listenbruecke-ci >/dev/null 2>&1 || true

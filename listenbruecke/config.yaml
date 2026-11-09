@@ -1,0 +1,20 @@
+name: Listenbrücke
+version: "0.1.0"
+slug: listenbruecke
+description: Einkaufslisten von Bring!, Monsieur Cuisine und Home Assistant abgleichen
+arch:
+  - amd64
+  - aarch64
+startup: application
+boot: auto
+init: false
+stage: experimental
+homeassistant_api: true
+hassio_api: false
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:cart-sync
+panel_title: Listenbrücke
+watchdog: http://[HOST]:8099/healthz
+options: {}
+schema: {}
