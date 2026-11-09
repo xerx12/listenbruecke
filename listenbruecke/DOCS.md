@@ -26,6 +26,24 @@ Im Docker-Betrieb kann zusätzlich eine Home-Assistant-URL mit Zugriffstoken ver
 werden. Bei Verwendung einer gesonderten lokalen HA-Liste muss das Konto die
 Entitätsregistrierung und die To-do-Liste lesen und bearbeiten dürfen.
 
+### Amazon Alexa direkt verbinden
+
+Im Amazon-Konto muss die Zwei-Schritt-Verifizierung mit einer Authenticator-App
+aktiviert sein. Unter **Verbindungen → Amazon Alexa** die Amazon-E-Mail-Adresse,
+das Passwort und den aktuellen sechsstelligen Code aus dieser App eingeben.
+**Mit Amazon verbinden** startet die Anmeldung; ihr Fortschritt bleibt sichtbar.
+Ein SMS-Code wird von diesem Anmeldeweg nicht unterstützt.
+
+Gespeichert wird ausschließlich die verschlüsselte Amazon-Sitzung. Passwort und
+Einmalcode werden nicht gespeichert und nach dem Absenden aus dem Formular entfernt.
+Bei einer abgelaufenen Sitzung die Anmeldung mit einem frischen Code wiederholen.
+Eine Alexa-Integration in Home Assistant ist für diesen direkten Zugang nicht nötig.
+
+Danach die Verbindung testen und unter **Listen & Abgleich** die gewünschte
+Alexa-Einkaufsliste auswählen. Bring! und Alexa können auch ohne Monsieur Cuisine
+abgeglichen werden. Eine über Home Assistant eingebundene Alexa-Liste darf nicht
+gleichzeitig mit dem direkten Alexa-Zugang als zweite Quelle verwendet werden.
+
 ## Listen auswählen
 
 Unter **Listen & Abgleich** mindestens zwei Anbieterlisten auswählen. Eine über
