@@ -1,6 +1,8 @@
 """Authenticated web UI and background worker for a self-hosted installation."""
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import io
 import ipaddress
@@ -21,6 +23,7 @@ from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from listenbruecke import __version__
+from listenbruecke.backup import BackupError, IMPORT_JSON_BYTES, apply_pending_import, backup_summary, stage_import
 from listenbruecke.models import ConnectorError
 from listenbruecke.store import Store, now
 from listenbruecke.sync import SyncEngine
@@ -46,6 +49,7 @@ class Service:
         self.wakeup = asyncio.Event()
         self.manual_task = None
         self._sync_running = False
+        self.restore_pending = False
         self.mode = "addon" if os.environ.get("SUPERVISOR_TOKEN") else "standalone"
         self.provider_status = {}
         for provider in PROVIDERS:
@@ -188,6 +192,8 @@ class Service:
             yield
 
     def start_sync(self):
+        if self.restore_pending:
+            raise ConnectorError("Die Wiederherstellung wartet auf den Neustart der App.")
         if self.lock.locked() or self.sync_running():
             raise ConnectorError("Ein Verbindungs- oder Synchronisierungsvorgang läuft bereits.")
         async def perform():
@@ -201,7 +207,7 @@ class Service:
         while True:
             self.wakeup.clear()
             settings = self.settings()
-            if settings["enabled"] and not self.sync_running():
+            if settings["enabled"] and not self.sync_running() and not self.restore_pending:
                 try:
                     await self.synchronize()
                 except ConnectorError:
@@ -228,6 +234,7 @@ def create_app(data_dir=None, *, factory=None, background=True):
 
     @asynccontextmanager
     async def lifespan(app):
+        apply_pending_import(directory)
         service = Service(Store(directory), factory=factory)
         app.state.service = service
         task = asyncio.create_task(service.worker()) if background else None
@@ -272,6 +279,7 @@ def create_app(data_dir=None, *, factory=None, background=True):
         if request.url.path.startswith("/api/"):
             if not trusted_host(request):
                 return JSONResponse({"detail": "Diese Serveradresse ist nicht freigegeben."}, status_code=403)
+            body_limit = IMPORT_JSON_BYTES if request.url.path == "/api/backup/import" else 32768
             if request.method in ("POST", "PUT", "PATCH", "DELETE"):
                 if request.headers.get("content-type", "").split(";")[0] != "application/json":
                     return JSONResponse({"detail": "Die Anfrage muss JSON enthalten."}, status_code=415)
@@ -279,7 +287,7 @@ def create_app(data_dir=None, *, factory=None, background=True):
                     length = int(request.headers.get("content-length", "0"))
                 except ValueError:
                     return JSONResponse({"detail": "Ungültige Anfrage."}, status_code=400)
-                if length > 32768:
+                if length > body_limit:
                     return JSONResponse({"detail": "Die Anfrage ist zu groß."}, status_code=413)
                 origin = request.headers.get("origin")
                 if origin and not ingress(request):
@@ -295,11 +303,13 @@ def create_app(data_dir=None, *, factory=None, background=True):
             public = request.url.path in ("/api/session", "/api/setup", "/api/login")
             if not public and not ingress(request) and not app.state.service.store.valid_session(request.cookies.get(COOKIE)):
                 return JSONResponse({"detail": "Bitte zuerst anmelden."}, status_code=401)
+            if app.state.service.restore_pending and request.method in ("POST", "PUT", "PATCH", "DELETE"):
+                return JSONResponse({"detail": "Die Wiederherstellung wartet auf den Neustart der App."}, status_code=409)
             if request.method in ("POST", "PUT", "PATCH", "DELETE"):
                 body = bytearray()
                 async for chunk in request.stream():
                     body.extend(chunk)
-                    if len(body) > 32768:
+                    if len(body) > body_limit:
                         return JSONResponse({"detail": "Die Anfrage ist zu groß."}, status_code=413)
                 request._body = bytes(body)
         response = await call_next(request)
@@ -374,6 +384,37 @@ def create_app(data_dir=None, *, factory=None, background=True):
     @app.get("/api/status")
     async def status():
         return app.state.service.status()
+
+    @app.get("/api/backup/summary")
+    async def backup_state_summary():
+        service = app.state.service
+        if service.lock.locked():
+            raise HTTPException(409, "Ein Vorgang läuft bereits. Bitte anschließend erneut versuchen.")
+        async with service.lock:
+            try:
+                return backup_summary(directory)
+            except BackupError as exc:
+                raise HTTPException(400, str(exc)) from None
+
+    @app.post("/api/backup/import")
+    async def import_backup(data: dict):
+        if set(data) != {"archive"} or not isinstance(data.get("archive"), str):
+            raise HTTPException(400, "Bitte eine gültige Sicherung übergeben.")
+        try:
+            archive = base64.b64decode(data["archive"], validate=True)
+        except (ValueError, binascii.Error):
+            raise HTTPException(400, "Die Sicherung ist ungültig.") from None
+        service = app.state.service
+        if service.lock.locked() or service.sync_running():
+            raise HTTPException(409, "Ein Vorgang läuft bereits. Bitte anschließend erneut versuchen.")
+        async with service.lock:
+            try:
+                summary = stage_import(directory, archive)
+            except BackupError as exc:
+                raise HTTPException(400, str(exc)) from None
+            service.restore_pending = True
+            service.wakeup.set()
+        return {"ok": True, "requires_restart": True, "summary": summary}
 
     @app.get("/api/events")
     async def events():
