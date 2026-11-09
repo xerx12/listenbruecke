@@ -31,7 +31,7 @@ Entitätsregistrierung und die To-do-Liste lesen und bearbeiten dürfen.
 Im Amazon-Konto muss die Zwei-Schritt-Verifizierung mit einer Authenticator-App
 aktiviert sein. Unter **Verbindungen → Amazon Alexa** die Amazon-E-Mail-Adresse,
 das Passwort und den aktuellen sechsstelligen Code aus dieser App eingeben.
-**Mit Amazon verbinden** startet die Anmeldung; ihr Fortschritt bleibt sichtbar.
+**Anmelden & verbinden** startet die Anmeldung; ihr Fortschritt bleibt sichtbar.
 Ein SMS-Code wird von diesem Anmeldeweg nicht unterstützt.
 
 Gespeichert wird ausschließlich die verschlüsselte Amazon-Sitzung. Passwort und
