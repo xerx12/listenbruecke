@@ -1,5 +1,5 @@
 name: Listenbrücke
-version: "0.2.0"
+version: "0.3.0"
 slug: listenbruecke
 description: Einkaufslisten von Bring!, Monsieur Cuisine, Alexa und Home Assistant abgleichen
 arch:
