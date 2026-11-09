@@ -32,5 +32,7 @@ class ListenbrueckeEntity(CoordinatorEntity[ListenbrueckeCoordinator]):
             raise HomeAssistantError("Die Listenbrücke-App konnte die Änderung nicht bestätigen. Bitte die Einkaufsliste prüfen.") from None
         finally:
             # A later write in a compound operation may fail after an earlier
-            # one succeeded. Refresh once, without retrying any mutation.
-            await self.coordinator.async_request_refresh()
+            # one succeeded. Await an actual read, including during HA's refresh
+            # cooldown, so dashboard/Assist services immediately see the write.
+            # This refresh never retries the preceding mutation.
+            await self.coordinator.async_refresh()

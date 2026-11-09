@@ -131,3 +131,35 @@ async def test_initial_api_failure_retries_setup_without_fabricating_empty_list(
     assert not await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
     assert not hass.states.async_all("todo")
+
+
+@pytest.mark.parametrize("operation", ["add", "update", "delete", "settings"])
+async def test_mutation_is_visible_before_service_returns_even_during_real_debounce_cooldown(hass, local_api, config_entry, operation):
+    await setup(hass, config_entry)
+    coordinator = config_entry.runtime_data
+    todo = entity_id(hass, "todo", "shopping_list")
+    # An ordinary user/manual refresh starts HA's real ten-second cooldown.
+    # Do not advance time or replace the debouncer: mutations must bypass it.
+    await coordinator.async_request_refresh()
+    assert coordinator._debounced_refresh._timer_task is not None
+    reads_before = len([call for call in local_api.calls if call[:2] == ("GET", "items")])
+    if operation == "add":
+        await hass.services.async_call("todo", "add_item", {"entity_id": todo, "item": "Brot", "description": "1 Stück"}, blocking=True)
+    elif operation == "update":
+        await hass.services.async_call("todo", "update_item", {"entity_id": todo, "item": "item-b", "rename": "Haferdrink", "status": "needs_action"}, blocking=True)
+    elif operation == "delete":
+        await hass.services.async_call("todo", "remove_item", {"entity_id": todo, "item": "item-a"}, blocking=True)
+    else:
+        await hass.services.async_call("switch", "turn_off", {"entity_id": entity_id(hass, "switch", "auto_sync")}, blocking=True)
+    result = await hass.services.async_call("todo", "get_items", {"entity_id": todo}, blocking=True, return_response=True)
+    items = {item["uid"]: item for item in result[todo]["items"]}
+    if operation == "add":
+        assert items["item-c"]["summary"] == "Brot"
+    elif operation == "update":
+        assert items["item-b"]["summary"] == "Haferdrink"
+        assert items["item-b"]["status"] == "needs_action"
+    elif operation == "delete":
+        assert "item-a" not in items
+    else:
+        assert hass.states.get(entity_id(hass, "switch", "auto_sync")).state == "off"
+    assert len([call for call in local_api.calls if call[:2] == ("GET", "items")]) > reads_before
