@@ -136,8 +136,16 @@ jobs:
             if curl --fail --silent http://127.0.0.1:8099/healthz >/dev/null; then
               break
             fi
+            if [ "$(docker inspect --format '{{.State.Running}}' listenbruecke-ci)" != "true" ]; then
+              docker logs listenbruecke-ci
+              exit 1
+            fi
             sleep 2
           done
+          if ! curl --fail --silent http://127.0.0.1:8099/healthz >/dev/null; then
+            docker logs listenbruecke-ci
+            exit 1
+          fi
           python3 - <<'PY'
           import json
           from urllib.request import urlopen
