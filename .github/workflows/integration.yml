@@ -1,0 +1,79 @@
+name: Home Assistant integration
+
+on:
+  push:
+    branches: [main, "codex/**"]
+    paths:
+      - "custom_components/listenbruecke/**"
+      - "tests/ha_native/**"
+      - "hacs.json"
+      - ".github/workflows/integration.yml"
+  pull_request:
+    paths:
+      - "custom_components/listenbruecke/**"
+      - "tests/ha_native/**"
+      - "hacs.json"
+      - ".github/workflows/integration.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ha-integration-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  homeassistant:
+    name: Home Assistant 2026.10.4
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: tests/ha_native/requirements.txt
+      - name: Install isolated Home Assistant test environment
+        run: |
+          python -m pip install -r tests/ha_native/requirements.txt
+          python -m pip check
+      - name: Test config flow, native entities, services and local branding
+        env:
+          PYTHONPATH: .
+        run: python -m pytest -q tests/ha_native
+      - name: Prepare installable custom integration ZIP
+        env:
+          RELEASE_ZIP: ${{ runner.temp }}/listenbruecke-integration.zip
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from zipfile import ZipFile, ZIP_DEFLATED
+
+          source = Path("custom_components/listenbruecke")
+          manifest = json.loads((source / "manifest.json").read_text())
+          assert manifest["domain"] == "listenbruecke"
+          assert json.loads(Path("hacs.json").read_text())["homeassistant"] == "2026.10.4"
+          with ZipFile(os.environ["RELEASE_ZIP"], "w", ZIP_DEFLATED) as archive:
+              for path in sorted(source.rglob("*")):
+                  if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc":
+                      archive.write(path, path.relative_to(source.parent))
+          with ZipFile(os.environ["RELEASE_ZIP"]) as archive:
+              names = set(archive.namelist())
+              for name in ("manifest.json", "__init__.py", "todo.py", "config_flow.py", "LICENSE",
+                           "translations/de.json", "brand/icon.png", "brand/logo.png"):
+                  assert "listenbruecke/" + name in names
+              assert all(name.startswith("listenbruecke/") for name in names)
+              assert not any(name.endswith((".pyc", ".key", ".sqlite3")) for name in names)
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: listenbruecke-integration
+          path: ${{ runner.temp }}/listenbruecke-integration.zip
+          if-no-files-found: error
+          retention-days: 14

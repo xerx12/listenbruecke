@@ -12,12 +12,12 @@ test("local setup, provider connections, optional HA list, sync, and ingress lay
   const prefix = "/ingress/browser-test/";
   const server = http.createServer(async (request, response) => {
     const filename = new URL(request.url, "http://localhost").pathname.slice(prefix.length) || "index.html";
-    if (!["index.html", "styles.css", "app.js"].includes(filename)) {
+    if (!["index.html", "styles.css", "app.js", "icon.svg"].includes(filename)) {
       response.writeHead(404).end();
       return;
     }
     const content = await readFile(path.join(__dirname, "..", "web", filename));
-    response.writeHead(200, { "Content-Type": filename.endsWith("html") ? "text/html" : filename.endsWith("css") ? "text/css" : "application/javascript" }).end(content);
+    response.writeHead(200, { "Content-Type": filename.endsWith("html") ? "text/html" : filename.endsWith("css") ? "text/css" : filename.endsWith("svg") ? "image/svg+xml" : "application/javascript" }).end(content);
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   server.unref();
@@ -52,6 +52,7 @@ test("local setup, provider connections, optional HA list, sync, and ingress lay
     if (endpoint === "logout") { session.authenticated = false; return respond({ ok: true }); }
     if (endpoint === "status") return respond(status);
     if (endpoint === "events") return respond(status.events);
+    if (endpoint === "integration") return respond({ enabled: false, instance_id: "synthetic-instance", suggested_url: "", token_configured: false, last_seen: null });
     if (endpoint === "connections/alexa/auth/status") return respond({ running: false, complete: false, error: null });
     if (endpoint === "settings") {
       if (method === "PUT") { settings = body; status.sync.enabled = body.enabled; status.sync.interval_seconds = body.interval_seconds; }
@@ -209,9 +210,9 @@ test("Alexa login clears secrets, resumes polling, reports failures, and syncs w
   const prefix = "/ingress/alexa-test/";
   const server = http.createServer(async (request, response) => {
     const filename = new URL(request.url, "http://localhost").pathname.slice(prefix.length) || "index.html";
-    if (!["index.html", "styles.css", "app.js"].includes(filename)) return response.writeHead(404).end();
+    if (!["index.html", "styles.css", "app.js", "icon.svg"].includes(filename)) return response.writeHead(404).end();
     const content = await readFile(path.join(__dirname, "..", "web", filename));
-    response.writeHead(200, { "Content-Type": filename.endsWith("html") ? "text/html" : filename.endsWith("css") ? "text/css" : "application/javascript" }).end(content);
+    response.writeHead(200, { "Content-Type": filename.endsWith("html") ? "text/html" : filename.endsWith("css") ? "text/css" : filename.endsWith("svg") ? "image/svg+xml" : "application/javascript" }).end(content);
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   server.unref();
@@ -222,7 +223,7 @@ test("Alexa login clears secrets, resumes polling, reports failures, and syncs w
   page.on("pageerror", (error) => browserErrors.push(error.message));
   const providers = ["monsieur_cuisine", "bring", "alexa", "homeassistant"].map((id) => ({ id, name: id, configured: id === "bring", connected: id === "bring", error: null, lists: id === "bring" ? [{ id: "bring-list", name: "Test-Einkauf" }] : [], last_test: null }));
   const alexa = providers.find((provider) => provider.id === "alexa");
-  const status = { version: "0.2.0", mode: "standalone", providers, sync: { enabled: false, interval_seconds: 60, running: false, last_run: null, last_success: null, last_error: null, items_synced: 0 }, events: [] };
+  const status = { version: "0.3.0", mode: "standalone", providers, sync: { enabled: false, interval_seconds: 60, running: false, last_run: null, last_success: null, last_error: null, items_synced: 0 }, events: [] };
   let settings = { enabled: false, interval_seconds: 60, targets: [], propagate_deletions: false };
   let auth = { running: false, complete: false, error: null };
   const starts = [];
@@ -239,6 +240,7 @@ test("Alexa login clears secrets, resumes polling, reports failures, and syncs w
     if (endpoint === "session") return respond({ authenticated: true, setup_required: false, ingress: false });
     if (endpoint === "status") return respond(status);
     if (endpoint === "events") return respond([]);
+    if (endpoint === "integration") return respond({ enabled: false, instance_id: "synthetic-instance", suggested_url: "", token_configured: false, last_seen: null });
     if (endpoint === "settings") {
       if (request.method() === "PUT") { settings = body; status.sync.enabled = body.enabled; status.sync.interval_seconds = body.interval_seconds; }
       return respond(settings);
@@ -323,7 +325,7 @@ test("Alexa login clears secrets, resumes polling, reports failures, and syncs w
     await page.locator('[data-nav="overview"]').click();
     await page.locator("#toast-close").click();
     await page.mouse.move(1430, 1090);
-    await page.screenshot({ path: "/tmp/listenbruecke-alexa-overview.png", fullPage: true, animations: "disabled" });
+    await page.screenshot({ path: "/tmp/listenbruecke-0.3-overview.png", fullPage: true, animations: "disabled" });
 
     await page.locator('[data-nav="connections"]').click();
     await page.locator('[data-test="alexa"]').click();
@@ -362,6 +364,186 @@ test("Alexa login clears secrets, resumes polling, reports failures, and syncs w
     assert.deepEqual(browserErrors, []);
   } finally {
     releaseStart?.();
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("native HA pairing shows keys only after creation and enables a single provider safely", { timeout: 60000 }, async () => {
+  const prefix = "/ingress/pairing-test/";
+  const server = http.createServer(async (request, response) => {
+    const filename = new URL(request.url, "http://localhost").pathname.slice(prefix.length) || "index.html";
+    if (!["index.html", "styles.css", "app.js", "icon.svg"].includes(filename)) return response.writeHead(404).end();
+    const content = await readFile(path.join(__dirname, "..", "web", filename));
+    response.writeHead(200, { "Content-Type": filename.endsWith("html") ? "text/html" : filename.endsWith("css") ? "text/css" : filename.endsWith("svg") ? "image/svg+xml" : "application/javascript" }).end(content);
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  server.unref();
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1100 }, permissions: ["clipboard-read", "clipboard-write"] });
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const status = { version: "0.3.0", mode: "standalone", providers: ["monsieur_cuisine", "bring", "alexa", "homeassistant"].map((id) => ({ id, configured: id === "bring", connected: id === "bring", error: null, lists: id === "bring" ? [{ id: "bring-list", name: "Test-Einkauf" }] : [], last_test: null })), sync: { enabled: false, interval_seconds: 60, running: false, last_run: null, last_success: null, last_error: null, items_synced: 0 }, events: [] };
+  let settings = { enabled: false, interval_seconds: 60, targets: [], propagate_deletions: false };
+  const integration = { enabled: false, instance_id: "synthetic-instance", suggested_url: "", token_configured: false, last_seen: null, token: "MUST-NEVER-BE-DISPLAYED-FROM-GET" };
+  const calls = [];
+  let rejectToken = true;
+  let holdToken = false;
+  let releaseToken;
+  let receiveToken;
+  let tokensCreated = 0;
+  let ingress = false;
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const endpoint = new URL(request.url()).pathname.slice((prefix + "api/").length);
+    calls.push({ endpoint, method: request.method(), body: request.postDataJSON() });
+    const respond = (data, code = 200) => route.fulfill({ status: code, contentType: "application/json", body: JSON.stringify(data) });
+    if (endpoint === "session") return respond({ authenticated: true, setup_required: false, ingress });
+    if (endpoint === "status") return respond(status);
+    if (endpoint === "events") return respond([]);
+    if (endpoint === "connections/alexa/auth/status") return respond({ running: false, complete: false, error: null });
+    if (endpoint === "integration") return respond(integration);
+    if (endpoint === "integration/token") {
+      assert.deepEqual(request.postDataJSON(), {});
+      if (rejectToken) return respond({ detail: "Der Verbindungsschlüssel konnte nicht erstellt werden. Bitte erneut versuchen." }, 400);
+      tokensCreated += 1;
+      integration.enabled = true;
+      integration.token_configured = true;
+      integration.suggested_url = "http://listenbruecke-addon.invalid:8099";
+      const token = "SYNTHETIC-PAIRING-KEY-" + tokensCreated;
+      receiveToken?.();
+      if (holdToken) await new Promise((resolve) => { releaseToken = resolve; });
+      return respond({ token, instance_id: integration.instance_id, suggested_url: integration.suggested_url });
+    }
+    if (endpoint === "settings") {
+      if (request.method() === "PUT") { settings = request.postDataJSON(); status.sync.enabled = settings.enabled; status.sync.interval_seconds = settings.interval_seconds; }
+      return respond(settings);
+    }
+    if (endpoint === "sync") return respond({ ok: true, added: 0, updated: 0, removed: 0, conflicts: 0, message: "Testabgleich abgeschlossen." });
+    return respond({ detail: "Unbekannte Testanfrage." }, 404);
+  });
+
+  try {
+    await page.goto(origin + prefix);
+    await page.locator("#last-refreshed").filter({ hasText: "Aktualisiert" }).waitFor();
+    await page.locator('[data-nav="connections"]').click();
+    assert.equal(await page.locator("#integration-url").inputValue(), origin, "Standalone installs should suggest their own origin");
+    assert.equal(await page.locator("#integration-token").inputValue(), "");
+    assert.equal(await page.locator("#integration-secret").isVisible(), false);
+    assert.equal((await page.locator("body").textContent()).includes(integration.token), false);
+    assert.equal(await page.locator("#integration-token").getAttribute("type"), "password");
+    assert.equal(await page.locator('#ha-integration a[href="https://github.com/xerx12/listenbruecke"]').count(), 1);
+    await page.locator('[data-nav="lists"]').click();
+    await page.locator("#list-bring").selectOption("bring-list");
+    await page.locator("#sync-interval").fill("90");
+    await page.locator("#sync-enabled").check();
+    await page.locator("#settings-save").click();
+    await page.locator("#toast-message").filter({ hasText: "mindestens zwei" }).waitFor();
+    assert.equal(calls.filter((call) => call.endpoint === "settings" && call.method === "PUT").length, 0);
+
+    await page.locator('[data-nav="connections"]').click();
+    await page.locator("#integration-create-token").click();
+    await page.locator("#integration-error").filter({ hasText: "nicht erstellt" }).waitFor();
+    assert.equal(await page.locator("#integration-token").inputValue(), "");
+    assert.equal(await page.locator("#integration-secret").isVisible(), false);
+    rejectToken = false;
+    await page.locator("#integration-create-token").click();
+    await page.locator("#integration-secret").waitFor({ state: "visible" });
+    assert.equal(await page.locator("#integration-token").inputValue(), "SYNTHETIC-PAIRING-KEY-1");
+    assert.equal(await page.locator("#integration-url").inputValue(), integration.suggested_url);
+    assert.equal(await page.locator("#integration-rotation").isVisible(), true);
+    assert.match(await page.locator("#integration-rotation").textContent(), /ersetzt den bisherigen/);
+    await page.locator("#integration-copy-token").click();
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), "SYNTHETIC-PAIRING-KEY-1");
+    await page.locator("#integration-copy-url").click();
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), integration.suggested_url);
+    await page.locator("#refresh-status").click();
+    await page.waitForFunction(() => !document.getElementById("refresh-status").disabled);
+    assert.equal(await page.locator("#integration-token").inputValue(), "SYNTHETIC-PAIRING-KEY-1", "Polling must not replace the key with an echoed GET field");
+    assert.deepEqual(await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length })), { local: 0, session: 0 });
+    await page.locator('[data-nav="lists"]').click();
+    assert.equal(await page.locator("#integration-token").inputValue(), "", "Navigation must clear the one-time key");
+    assert.equal(await page.locator("#integration-secret").isVisible(), false);
+    assert.equal(await page.locator("#sync-interval").inputValue(), "90", "Pairing refresh must preserve unsaved settings");
+    assert.equal(await page.locator("#list-bring").inputValue(), "bring-list");
+    assert.match(await page.locator("#list-readiness").textContent(), /zählt bereits mit/);
+    await page.locator("#settings-save").click();
+    await page.locator("#toast-message").filter({ hasText: "eingeschaltet" }).waitFor();
+    assert.deepEqual(settings.targets, [{ provider: "bring", list_id: "bring-list" }]);
+    assert.equal(await page.locator('#view-lists [data-sync-button]').isDisabled(), false);
+    await page.locator('#view-lists [data-sync-button]').click();
+    await page.locator("#sync-result").filter({ hasText: "Testabgleich" }).waitFor();
+
+    await page.locator('[data-nav="connections"]').click();
+    holdToken = true;
+    const requested = new Promise((resolve) => { receiveToken = resolve; });
+    await page.locator("#integration-create-token").click();
+    await requested;
+    await page.locator('[data-nav="overview"]').click();
+    releaseToken();
+    await page.waitForFunction(() => !document.getElementById("integration-create-token").disabled);
+    await page.locator('[data-nav="connections"]').click();
+    assert.equal(await page.locator("#integration-token").inputValue(), "", "A late response after navigation must not restore a secret");
+    holdToken = false;
+    await page.locator("#integration-create-token").click();
+    await page.locator("#integration-secret").waitFor({ state: "visible" });
+    assert.equal(await page.locator("#integration-token").inputValue(), "SYNTHETIC-PAIRING-KEY-3");
+    status.mode = "addon"; ingress = true;
+    integration.last_seen = "2026-11-09T20:00:00Z";
+    await page.reload();
+    await page.locator("#last-refreshed").filter({ hasText: "Aktualisiert" }).waitFor();
+    assert.equal(await page.locator("#integration-token").inputValue(), "", "Reload must never restore a key");
+    assert.equal(await page.locator("#integration-url").inputValue(), integration.suggested_url, "Add-on mode must use the backend address");
+    assert.match(await page.locator("#integration-last-seen").textContent(), /Letzter Zugriff/);
+    assert.equal(await page.locator("#integration-pill").textContent(), "Kontakt bestätigt");
+    await page.locator("#ha-integration").screenshot({ path: "/tmp/listenbruecke-ha-pairing.png", animations: "disabled" });
+    assert.equal(calls.some((call) => call.endpoint.startsWith("connections/") && call.method === "POST"), false, "Pairing must not trigger vendor connection tests");
+    for (const width of [1440, 768, 390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, `Pairing should fit ${width}px`);
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    releaseToken?.();
+    await browser.close();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("Home Assistant brand PNGs render from the original local vector", async () => {
+  const assets = [
+    ["/addon-icon.png", path.join(__dirname, "..", "icon.png"), 256],
+    ["/addon-logo.png", path.join(__dirname, "..", "logo.png"), 512],
+    ...[["icon.png", 256], ["icon@2x.png", 512], ["logo.png", 512], ["logo@2x.png", 1024]].map(([name, size]) => ["/brand/" + name, path.join(__dirname, "..", "..", "custom_components", "listenbruecke", "brand", name), size]),
+  ];
+  const server = http.createServer(async (request, response) => {
+    if (request.url === "/") return response.writeHead(200, { "Content-Type": "text/html" }).end(assets.map(([url], index) => `<img id="brand-${index}" src="${url}" alt="Synthetische Grafikprüfung">`).join(""));
+    const asset = assets.find(([url]) => url === request.url);
+    if (!asset) return response.writeHead(404).end();
+    response.writeHead(200, { "Content-Type": "image/png" }).end(await readFile(asset[1]));
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  server.unref();
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const browser = await chromium.launch({ headless: true, args: ["--no-sandbox"] });
+  try {
+    const page = await browser.newPage();
+    await page.goto(origin + "/");
+    await page.waitForFunction(() => [...document.images].every((image) => image.complete && image.naturalWidth > 0));
+    for (let index = 0; index < assets.length; index++) {
+      assert.deepEqual(await page.locator("#brand-" + index).evaluate((image) => [image.naturalWidth, image.naturalHeight]), [assets[index][2], assets[index][2]]);
+    }
+    const pixels = await page.locator("#brand-0").evaluate((image) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth; canvas.height = image.naturalHeight;
+      const context = canvas.getContext("2d"); context.drawImage(image, 0, 0);
+      return { corner: [...context.getImageData(0, 0, 1, 1).data], mint: [...context.getImageData(128, 26, 1, 1).data] };
+    });
+    assert.equal(pixels.corner[3], 0);
+    assert.deepEqual(pixels.mint, [211, 237, 179, 255]);
+  } finally {
     await browser.close();
     await new Promise((resolve) => server.close(resolve));
   }

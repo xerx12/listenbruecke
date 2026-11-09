@@ -1,0 +1,50 @@
+{
+  "title": "Listenbrücke",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect Listenbrücke",
+        "description": "Open Connections → Home Assistant in your Listenbrücke app and create a dedicated app token. Enter the app URL and this token here.",
+        "data": {"url": "App URL", "token": "Home Assistant app token"}
+      },
+      "reauth_confirm": {
+        "title": "Reconnect Listenbrücke",
+        "description": "Create a new Home Assistant token in the same Listenbrücke app and enter it here.",
+        "data": {"url": "App URL", "token": "Home Assistant app token"}
+      },
+      "reconfigure": {
+        "title": "Update connection",
+        "description": "Enter the URL and dedicated token of the same Listenbrücke instance.",
+        "data": {"url": "App URL", "token": "Home Assistant app token"}
+      }
+    },
+    "error": {
+      "cannot_connect": "Cannot connect to the Listenbrücke app. Check the app URL and whether the app is running.",
+      "invalid_auth": "The dedicated app token is invalid. Create a new Home Assistant token in Listenbrücke.",
+      "wrong_instance": "This URL belongs to a different Listenbrücke instance. Use the originally paired app."
+    },
+    "abort": {
+      "already_configured": "This Listenbrücke instance is already configured.",
+      "reauth_successful": "The Listenbrücke connection has been renewed.",
+      "reconfigure_successful": "The Listenbrücke connection has been updated."
+    }
+  },
+  "entity": {
+    "todo": {"shopping_list": {"name": "Shopping list"}},
+    "sensor": {
+      "last_success": {"name": "Last successful synchronization"},
+      "open_items": {"name": "Open shopping items"},
+      "items_synced": {"name": "Transferred items"}
+    },
+    "binary_sensor": {
+      "problem": {"name": "Problem"},
+      "provider_bring": {"name": "Bring! connection"},
+      "provider_monsieur_cuisine": {"name": "Monsieur Cuisine connection"},
+      "provider_alexa": {"name": "Alexa connection"},
+      "provider_homeassistant": {"name": "Home Assistant connection"}
+    },
+    "switch": {"auto_sync": {"name": "Automatic synchronization"}},
+    "number": {"interval": {"name": "Synchronization interval"}},
+    "button": {"sync_now": {"name": "Synchronize now"}}
+  }
+}

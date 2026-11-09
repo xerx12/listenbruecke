@@ -81,6 +81,17 @@ async def test_discovers_only_independent_lists_and_preserves_duplicate_items(se
 
 
 @pytest.mark.asyncio
+async def test_own_native_integration_is_always_excluded_even_when_empty(setup):
+    connector, backend = setup
+    connector.origins["todo.local"] = "listenbruecke"
+    backend.rows = []
+    assert not await connector.list_lists()
+    with pytest.raises(UnsupportedOperation, match="gemeinsame Listenbrücke"):
+        await connector.get_items("todo.local")
+    assert not any(r.method == "POST" for r in backend.calls)
+
+
+@pytest.mark.asyncio
 async def test_crud_uses_exact_uid_and_selected_entity(setup):
     connector, backend = setup
     first, second = await connector.get_items("todo.local")

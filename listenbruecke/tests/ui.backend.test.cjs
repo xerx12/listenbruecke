@@ -180,6 +180,68 @@ test("actual API: setup/login, fake providers, synchronization, disconnect and C
     assert.equal(status.providers.find((provider) => provider.id === "alexa").configured, false);
     assert.equal(status.sync.enabled, false);
 
+    // Pair the real scoped API with the browser, without a Home Assistant
+    // installation or any live provider. One external source now suffices.
+    const unpaired = await (await page.request.get(origin + "/api/integration")).json();
+    assert.equal(unpaired.enabled, false);
+    assert.equal("token" in unpaired, false);
+    assert.equal(await page.locator("#integration-token").inputValue(), "");
+    await page.locator("#integration-create-token").click();
+    await page.locator("#integration-secret").waitFor({ state: "visible" });
+    await page.waitForFunction(() => !document.getElementById("integration-create-token").disabled);
+    const token = await page.locator("#integration-token").inputValue();
+    assert.ok(token.length >= 32);
+    const paired = await (await page.request.get(origin + "/api/integration")).json();
+    assert.equal(paired.enabled, true);
+    assert.equal(paired.token_configured, true);
+    assert.equal("token" in paired, false);
+    const machine = await browser.newContext();
+    const machineHeaders = { Authorization: "Bearer " + token };
+    const machineState = await machine.request.get(origin + "/api/ha/v1/state", { headers: machineHeaders });
+    assert.equal(machineState.status(), 200);
+    assert.equal((await machineState.json()).instance_id, paired.instance_id);
+    assert.equal((await machineState.text()).includes(token), false);
+    const created = await machine.request.post(origin + "/api/ha/v1/items", {
+      headers: machineHeaders, data: { summary: "Test-Haferflocken", description: "500 g", request_id: "synthetic-ui-item" },
+    });
+    assert.equal(created.status(), 200);
+    await page.locator('[data-nav="lists"]').click();
+    assert.equal(await page.locator("#integration-token").inputValue(), "");
+    await page.locator("#list-alexa").selectOption("");
+    await page.locator("#list-bring").selectOption("bring-synthetic-list");
+    await page.locator("#sync-enabled").check();
+    await page.locator("#settings-save").click();
+    await page.locator("#toast-message").filter({ hasText: "eingeschaltet" }).waitFor();
+    const singleSourceSettings = await (await page.request.get(origin + "/api/settings")).json();
+    assert.deepEqual(singleSourceSettings.targets, [{ provider: "bring", list_id: "bring-synthetic-list" }]);
+    assert.equal(await page.locator('#view-lists [data-sync-button]').isDisabled(), false);
+    const pairedSync = page.waitForResponse((result) => result.url() === origin + "/api/sync" && result.request().method() === "POST");
+    await page.locator('#view-lists [data-sync-button]').click();
+    assert.equal((await pairedSync).status(), 202);
+    for (let attempt = 0; attempt < 100; attempt++) {
+      status = await (await page.request.get(origin + "/api/status")).json();
+      if (!status.sync.running && status.sync.last_success) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    const shared = await (await machine.request.get(origin + "/api/ha/v1/items", { headers: machineHeaders })).json();
+    assert.equal(shared.available, true);
+    assert.deepEqual(shared.items.map((item) => item.summary).sort(), ["Test-Brot", "Test-Haferflocken", "Testmilch"]);
+    assert.equal((await machine.request.put(origin + "/api/ha/v1/settings", { headers: machineHeaders, data: { enabled: false, interval_seconds: 120 } })).status(), 200);
+    await page.locator("#refresh-status").click();
+    await page.waitForFunction(() => !document.getElementById("refresh-status").disabled);
+    assert.equal(await page.locator("#sync-enabled").isChecked(), false);
+    assert.equal(await page.locator("#sync-interval").inputValue(), "120");
+    await page.locator('[data-nav="connections"]').click();
+    assert.equal(await page.locator("#integration-pill").textContent(), "Kontakt bestätigt");
+    await page.locator("#integration-create-token").click();
+    await page.locator("#integration-secret").waitFor({ state: "visible" });
+    await page.waitForFunction(() => !document.getElementById("integration-create-token").disabled);
+    const replacement = await page.locator("#integration-token").inputValue();
+    assert.notEqual(replacement, token);
+    assert.equal((await machine.request.get(origin + "/api/ha/v1/state", { headers: machineHeaders })).status(), 401);
+    assert.equal((await machine.request.get(origin + "/api/ha/v1/state", { headers: { Authorization: "Bearer " + replacement } })).status(), 200);
+    await machine.close();
+
     await page.locator("#logout").click();
     await page.locator("#auth-screen").waitFor({ state: "visible" });
     await page.locator("#auth-password").fill("synthetic-local-password-123");

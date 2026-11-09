@@ -24,6 +24,8 @@ from fastapi.staticfiles import StaticFiles
 
 from listenbruecke import __version__
 from listenbruecke.backup import BackupError, IMPORT_JSON_BYTES, apply_pending_import, backup_summary, stage_import
+from listenbruecke.bridge import (TARGET as BRIDGE_TARGET, BridgeConnector, integration_config,
+                                 integration_status, issue_token, machine_item, valid_token)
 from listenbruecke.models import ConnectorError
 from listenbruecke.store import Store, now
 from listenbruecke.sync import SyncEngine
@@ -84,6 +86,10 @@ class Service:
     async def connector(self, provider):
         if provider in self.clients:
             return self.clients[provider]
+        if provider == "_bridge":
+            client = BridgeConnector(self.store)
+            self.clients[provider] = client
+            return client
         credentials = self.credentials(provider)
         if not credentials:
             raise ConnectorError("Bitte zuerst die Verbindung einrichten.")
@@ -187,14 +193,19 @@ class Service:
             metrics.update({"last_run": now(), "last_error": None})
             self.store.set("sync_metrics", metrics)
             try:
-                clients = {t["provider"]: await self.connector(t["provider"]) for t in settings["targets"]}
+                targets = list(settings["targets"])
+                if self.store.get("ha_integration", {}).get("enabled"):
+                    targets.append(dict(BRIDGE_TARGET))
+                clients = {t["provider"]: await self.connector(t["provider"]) for t in targets}
                 await self.validate_target_mirrors(settings["targets"], clients)
-                result = await SyncEngine(self.store).run(settings["targets"], clients,
+                result = await SyncEngine(self.store).run(targets, clients,
                     propagate_deletions=settings["propagate_deletions"])
                 # A complete reconciliation also verifies every selected source.
                 # Refresh restart-reset connection flags without discarding the
                 # list metadata collected by the explicit connection test.
                 for provider in clients:
+                    if provider not in PROVIDERS:
+                        continue
                     status = {**self.provider_status[provider], "connected": True,
                               "error": None, "last_test": now()}
                     self.provider_status[provider] = status
@@ -369,7 +380,11 @@ def create_app(data_dir=None, *, factory=None, background=True):
     @app.middleware("http")
     async def protect(request: Request, call_next):
         if request.url.path.startswith("/api/"):
-            if not trusted_host(request):
+            machine_path = request.url.path.startswith("/api/ha/v1/")
+            machine_auth = machine_path and valid_token(app.state.service.store, request.headers.get("authorization"))
+            if machine_path and not machine_auth:
+                return JSONResponse({"detail": "Der Zugriff der Home-Assistant-Integration ist ungültig."}, status_code=401)
+            if not machine_auth and not trusted_host(request):
                 return JSONResponse({"detail": "Diese Serveradresse ist nicht freigegeben."}, status_code=403)
             body_limit = IMPORT_JSON_BYTES if request.url.path == "/api/backup/import" else 32768
             if request.method in ("POST", "PUT", "PATCH", "DELETE"):
@@ -382,7 +397,7 @@ def create_app(data_dir=None, *, factory=None, background=True):
                 if length > body_limit:
                     return JSONResponse({"detail": "Die Anfrage ist zu groß."}, status_code=413)
                 origin = request.headers.get("origin")
-                if origin and not ingress(request):
+                if origin and not ingress(request) and not machine_auth:
                     try:
                         origin_url = urlsplit(origin)
                         valid_origin = (origin_url.netloc == request.headers.get("host")
@@ -393,7 +408,7 @@ def create_app(data_dir=None, *, factory=None, background=True):
                     if not valid_origin:
                         return JSONResponse({"detail": "Die Anfrage stammt nicht aus dieser Oberfläche."}, status_code=403)
             public = request.url.path in ("/api/session", "/api/setup", "/api/login")
-            if not public and not ingress(request) and not app.state.service.store.valid_session(request.cookies.get(COOKIE)):
+            if not public and not machine_auth and not ingress(request) and not app.state.service.store.valid_session(request.cookies.get(COOKIE)):
                 return JSONResponse({"detail": "Bitte zuerst anmelden."}, status_code=401)
             if app.state.service.restore_pending and request.method in ("POST", "PUT", "PATCH", "DELETE"):
                 return JSONResponse({"detail": "Die Wiederherstellung wartet auf den Neustart der App."}, status_code=409)
@@ -476,6 +491,121 @@ def create_app(data_dir=None, *, factory=None, background=True):
     @app.get("/api/status")
     async def status():
         return app.state.service.status()
+
+    @app.get("/api/integration")
+    async def get_integration():
+        service = app.state.service
+        return integration_status(service.store, addon=service.mode == "addon")
+
+    @app.post("/api/integration/token")
+    async def create_integration_token(data: dict):
+        if data:
+            raise HTTPException(400, "Diese Anfrage benötigt keine zusätzlichen Angaben.")
+        service = app.state.service
+        async with service.configure():
+            if not service.store.get("ha_integration", {}).get("enabled"):
+                SyncEngine(service.store).include_target(service.settings()["targets"], BRIDGE_TARGET)
+            token = issue_token(service.store)
+            service.wakeup.set()
+            result = integration_status(service.store, addon=service.mode == "addon")
+            return {"token": token, "instance_id": result["instance_id"], "suggested_url": result["suggested_url"]}
+
+    def seen_by_ha():
+        service = app.state.service
+        config = integration_config(service.store)
+        config["last_seen"] = now()
+        service.store.set("ha_integration", config)
+        return service, config
+
+    @app.get("/api/ha/v1/state")
+    async def ha_state():
+        service, config = seen_by_ha()
+        status = service.status()
+        return {"instance_id": config["instance_id"], "name": "Listenbrücke", "version": __version__,
+                "sync": {key: status["sync"][key] for key in
+                         ("enabled", "interval_seconds", "running", "last_success", "last_error", "items_synced")},
+                "providers": [{key: provider[key] for key in
+                               ("id", "name", "configured", "connected", "last_test", "error")}
+                              for provider in status["providers"]]}
+
+    @app.get("/api/ha/v1/items")
+    async def ha_items():
+        service, _ = seen_by_ha()
+        connector = await service.connector("_bridge")
+        return {"available": not service.restore_pending,
+                "items": [machine_item(item) for item in await connector.get_items("local")]}
+
+    async def bridge_item(uid):
+        connector = await app.state.service.connector("_bridge")
+        item = next((item for item in await connector.get_items("local") if item.uid == uid), None)
+        if item is None:
+            raise HTTPException(404, "Der Artikel ist nicht mehr verfügbar.")
+        return connector, item
+
+    @app.post("/api/ha/v1/items")
+    async def ha_add_item(data: dict):
+        if not set(data) <= {"summary", "description", "request_id"} or "summary" not in data:
+            raise HTTPException(400, "Bitte einen Artikelnamen übergeben.")
+        service, _ = seen_by_ha()
+        async with service.configure():
+            connector = await service.connector("_bridge")
+            item = await connector.add_item("local", data["summary"], data.get("description", ""),
+                                             request_id=data.get("request_id"))
+            service.wakeup.set()
+        return {"item": machine_item(item)}
+
+    @app.patch("/api/ha/v1/items/{uid}")
+    async def ha_update_item(uid: str, data: dict):
+        if not data or not set(data) <= {"summary", "description", "status"}:
+            raise HTTPException(400, "Bitte gültige Artikelangaben übergeben.")
+        values = {}
+        for field, value in data.items():
+            if field == "status":
+                if value not in ("needs_action", "completed"):
+                    raise HTTPException(400, "Bitte einen gültigen Artikelstatus übergeben.")
+                values["completed"] = value == "completed"
+            else:
+                values["name" if field == "summary" else field] = value
+        service, _ = seen_by_ha()
+        async with service.configure():
+            connector, item = await bridge_item(uid)
+            item = await connector.update_item("local", item, **values)
+            service.wakeup.set()
+        return {"item": machine_item(item)}
+
+    @app.delete("/api/ha/v1/items/{uid}")
+    async def ha_delete_item(uid: str):
+        service, _ = seen_by_ha()
+        async with service.configure():
+            connector, item = await bridge_item(uid)
+            await connector.delete_item("local", item)
+            service.wakeup.set()
+        return {"ok": True}
+
+    @app.put("/api/ha/v1/settings")
+    async def ha_settings(data: dict):
+        if not data or not set(data) <= {"enabled", "interval_seconds"}:
+            raise HTTPException(400, "Bitte eine gültige Synchronisierungseinstellung übergeben.")
+        if ("enabled" in data and type(data["enabled"]) is not bool
+                or "interval_seconds" in data and
+                (type(data["interval_seconds"]) is not int or not 30 <= data["interval_seconds"] <= 3600)):
+            raise HTTPException(400, "Bitte ein Intervall zwischen 30 und 3600 Sekunden wählen.")
+        service, _ = seen_by_ha()
+        async with service.configure():
+            settings = {**service.settings(), **data}
+            if settings["enabled"] and not settings["targets"]:
+                raise HTTPException(400, "Bitte zuerst mindestens eine externe Liste auswählen.")
+            service.store.set("sync_settings", settings)
+            service.wakeup.set()
+        return {"ok": True, "enabled": settings["enabled"], "interval_seconds": settings["interval_seconds"]}
+
+    @app.post("/api/ha/v1/sync")
+    async def ha_sync(data: dict):
+        if data:
+            raise HTTPException(400, "Diese Anfrage benötigt keine zusätzlichen Angaben.")
+        service, _ = seen_by_ha()
+        service.start_sync()
+        return JSONResponse({"ok": True, "accepted": True}, status_code=202)
 
     @app.get("/api/backup/summary")
     async def backup_state_summary():
@@ -653,7 +783,8 @@ def create_app(data_dir=None, *, factory=None, background=True):
                     raise HTTPException(400, PROVIDERS[provider] + ": Bitte zuerst die Verbindung erfolgreich testen.")
                 if target["list_id"] not in {x["id"] for x in service.provider(provider)["lists"]}:
                     raise HTTPException(400, "Die ausgewählte Liste ist nicht verfügbar oder bereits über einen anderen Anbieter eingebunden.")
-            if settings["enabled"] and len(settings["targets"]) < 2:
+            total_targets = len(settings["targets"]) + bool(service.store.get("ha_integration", {}).get("enabled"))
+            if settings["enabled"] and total_targets < 2:
                 raise HTTPException(400, "Für den automatischen Abgleich mindestens zwei Listen auswählen.")
             await service.validate_target_mirrors(settings["targets"])
             service.store.set("sync_settings", settings)

@@ -1,0 +1,50 @@
+{
+  "title": "Listenbrücke",
+  "config": {
+    "step": {
+      "user": {
+        "title": "Listenbrücke verbinden",
+        "description": "Öffne in deiner Listenbrücke-App Verbindungen → Home Assistant und erstelle ein eigenes App-Token. Trage hier die App-Adresse und dieses Token ein.",
+        "data": {"url": "App-Adresse", "token": "Home-Assistant-App-Token"}
+      },
+      "reauth_confirm": {
+        "title": "Listenbrücke erneut verbinden",
+        "description": "Erstelle in derselben Listenbrücke-App ein neues Home-Assistant-Token und trage es hier ein.",
+        "data": {"url": "App-Adresse", "token": "Home-Assistant-App-Token"}
+      },
+      "reconfigure": {
+        "title": "Verbindung anpassen",
+        "description": "Trage die Adresse und das eigene Token derselben Listenbrücke-Instanz ein.",
+        "data": {"url": "App-Adresse", "token": "Home-Assistant-App-Token"}
+      }
+    },
+    "error": {
+      "cannot_connect": "Die Listenbrücke-App ist nicht erreichbar. Prüfe die App-Adresse und ob die App läuft.",
+      "invalid_auth": "Das eigene App-Token ist ungültig. Erstelle in Listenbrücke ein neues Home-Assistant-Token.",
+      "wrong_instance": "Diese Adresse gehört zu einer anderen Listenbrücke-Instanz. Verwende die ursprünglich verbundene App."
+    },
+    "abort": {
+      "already_configured": "Diese Listenbrücke-Instanz ist bereits eingerichtet.",
+      "reauth_successful": "Die Listenbrücke-Verbindung wurde erneuert.",
+      "reconfigure_successful": "Die Listenbrücke-Verbindung wurde aktualisiert."
+    }
+  },
+  "entity": {
+    "todo": {"shopping_list": {"name": "Einkaufsliste"}},
+    "sensor": {
+      "last_success": {"name": "Letzter erfolgreicher Abgleich"},
+      "open_items": {"name": "Offene Einkaufsartikel"},
+      "items_synced": {"name": "Übertragene Artikel"}
+    },
+    "binary_sensor": {
+      "problem": {"name": "Problem"},
+      "provider_bring": {"name": "Bring!-Verbindung"},
+      "provider_monsieur_cuisine": {"name": "Monsieur-Cuisine-Verbindung"},
+      "provider_alexa": {"name": "Alexa-Verbindung"},
+      "provider_homeassistant": {"name": "Home-Assistant-Verbindung"}
+    },
+    "switch": {"auto_sync": {"name": "Automatischer Abgleich"}},
+    "number": {"interval": {"name": "Abgleichintervall"}},
+    "button": {"sync_now": {"name": "Jetzt abgleichen"}}
+  }
+}

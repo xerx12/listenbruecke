@@ -23,6 +23,10 @@
     alexaPollBusy: false,
     alexaPollTimer: null,
     alexaAuthGeneration: 0,
+    integration: null,
+    integrationError: null,
+    integrationCreating: false,
+    integrationSecretGeneration: 0,
   };
   const $ = (id) => document.getElementById(id);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -179,6 +183,72 @@
     $$("input", $("ha-form")).forEach((input) => { input.disabled = addon; });
     $("logout").hidden = Boolean(state.session?.ingress);
     renderAlexaAuth();
+    renderIntegration();
+  }
+
+  function integrationState(data) {
+    return {
+      enabled: data?.enabled === true,
+      instance_id: typeof data?.instance_id === "string" ? data.instance_id : "",
+      suggested_url: typeof data?.suggested_url === "string" ? data.suggested_url : "",
+      token_configured: data?.token_configured === true,
+      last_seen: typeof data?.last_seen === "string" ? data.last_seen : null,
+    };
+  }
+
+  function clearIntegrationToken() {
+    state.integrationSecretGeneration += 1;
+    $("integration-token").value = "";
+    $("integration-secret").hidden = true;
+    $("integration-copy-token").disabled = true;
+  }
+
+  function renderIntegration() {
+    const integration = state.integration;
+    const addon = Boolean(state.session?.ingress || state.status?.mode === "addon" || state.status?.mode === "add-on");
+    $("integration-url").value = integration?.suggested_url || (addon ? "" : window.location.origin);
+    $("integration-copy-url").disabled = !$("integration-url").value;
+    $("integration-copy-token").disabled = !$("integration-token").value;
+    $("integration-rotation").hidden = !integration?.token_configured;
+    $("integration-create-token").disabled = state.integrationCreating;
+    $("integration-error").textContent = state.integrationError || "";
+    $("integration-error").hidden = !state.integrationError;
+    const info = state.integrationError ? { label: "Prüfung nötig", className: "error" }
+      : !integration ? { label: "Wird geladen", className: "pending" }
+      : integration.last_seen ? { label: "Kontakt bestätigt", className: "success" }
+      : integration.token_configured ? { label: "Bereit zum Verbinden", className: "pending" }
+      : { label: "Noch nicht eingerichtet", className: "neutral" };
+    setPill($("integration-pill"), info);
+    setText("integration-last-seen", integration?.last_seen ? `Letzter Zugriff aus Home Assistant: ${dateTime(integration.last_seen)}` : "Noch kein Zugriff aus Home Assistant bestätigt.");
+    setText("integration-list-hint", integration?.enabled ? "Deine gemeinsame Einkaufsliste ist aktiviert und zählt beim Abgleich bereits mit. Wähle mindestens eine Anbieter-Liste dazu." : "Deine gemeinsame Einkaufsliste kann nach dem Verbinden in Home Assistant verwendet werden.");
+  }
+
+  async function copyIntegrationField(id) {
+    const value = $(id).value;
+    if (!value) return;
+    let scratch;
+    try {
+      if (navigator.clipboard?.writeText) {
+        try { await navigator.clipboard.writeText(value); }
+        catch { throw new Error("clipboard_unavailable"); }
+      } else {
+        scratch = document.createElement("textarea");
+        scratch.className = "sr-only";
+        scratch.value = value;
+        scratch.readOnly = true;
+        document.body.append(scratch);
+        scratch.focus();
+        scratch.select();
+        if (!document.execCommand("copy")) throw new Error("clipboard_unavailable");
+      }
+      toast(id === "integration-token" ? "Verbindungsschlüssel kopiert." : "Adresse kopiert.");
+    } catch {
+      $(id).focus();
+      $(id).select();
+      toast("Automatisches Kopieren ist hier nicht verfügbar. Bitte den markierten Inhalt manuell kopieren.");
+    } finally {
+      scratch?.remove();
+    }
   }
 
   function renderAlexaAuth() {
@@ -246,12 +316,16 @@
     return state.settings?.targets || [];
   }
 
+  function minimumExternalTargets() {
+    return state.integration?.enabled ? 1 : 2;
+  }
+
   function hasTargets() {
-    return selectedTargets().filter((target) => target.list_id).length >= 2;
+    return selectedTargets().filter((target) => target.list_id).length >= minimumExternalTargets();
   }
 
   function connectionsReady() {
-    return PROVIDERS.filter((meta) => providerById(meta.id)?.connected).length >= 2
+    return PROVIDERS.filter((meta) => providerById(meta.id)?.connected).length >= minimumExternalTargets()
       && selectedTargets().every((target) => !target.list_id || providerById(target.provider)?.connected);
   }
 
@@ -261,6 +335,7 @@
     const enabled = Boolean(sync.enabled);
     const running = Boolean(sync.running);
     const ready = connectionsReady();
+    const minimum = minimumExternalTargets();
     setText("nav-connection-count", `${connectedCount}/${PROVIDERS.length}`);
     setText("setup-progress", `${connectedCount} von ${PROVIDERS.length} verbunden`);
     setText("app-version", state.status?.version ? `Version ${state.status.version}` : "Listenbrücke");
@@ -278,11 +353,12 @@
     $("step-connect").classList.toggle("done", ready);
     $("step-lists").classList.toggle("done", hasTargets());
     $("step-enable").classList.toggle("done", enabled);
+    document.querySelector("#step-connect p").textContent = minimum === 1 ? "Mindestens einen Anbieter sicher anmelden." : "Mindestens zwei Dienste sicher anmelden.";
     const button = $("welcome-action");
     if (!ready) {
       setText("welcome-kicker", "DEINE LISTEN ZUSAMMENBRINGEN");
       $("welcome-title").replaceChildren(document.createTextNode("Einmal verbinden."), document.createElement("br"), document.createTextNode("Gemeinsam einkaufen."));
-      setText("welcome-description", "Verbinde mindestens zwei Konten, wähle deine Einkaufslisten und starte den automatischen Abgleich.");
+      setText("welcome-description", minimum === 1 ? "Deine gemeinsame Home-Assistant-Liste ist aktiviert. Verbinde mindestens einen Anbieter und wähle seine Einkaufsliste aus." : "Verbinde mindestens zwei Konten, wähle deine Einkaufslisten und starte den automatischen Abgleich.");
       button.replaceChildren(document.createTextNode("Verbindungen einrichten"), icon("arrow"));
       button.href = "#connections";
     } else if (!enabled) {
@@ -300,7 +376,7 @@
     }
     $$('[data-sync-button]').forEach((syncButton) => {
       syncButton.disabled = state.syncing || running || state.alexaAuth.running || state.alexaSubmitting || !ready || !hasTargets();
-      syncButton.title = running ? "Der Abgleich läuft bereits." : !ready ? "Verbinde mindestens zwei Konten und prüfe die ausgewählten Verbindungen." : !hasTargets() ? "Wähle mindestens zwei Einkaufslisten aus und speichere die Einstellungen." : "Ausgewählte Listen jetzt abgleichen";
+      syncButton.title = running ? "Der Abgleich läuft bereits." : !ready ? minimum === 1 ? "Verbinde mindestens einen Anbieter und prüfe die ausgewählten Verbindungen." : "Verbinde mindestens zwei Konten und prüfe die ausgewählten Verbindungen." : !hasTargets() ? minimum === 1 ? "Wähle mindestens eine Anbieter-Liste aus und speichere die Einstellungen." : "Wähle mindestens zwei Einkaufslisten aus und speichere die Einstellungen." : "Ausgewählte Listen jetzt abgleichen";
     });
   }
 
@@ -335,8 +411,10 @@
       select.value = String(chosenValue);
       select.disabled = !provider?.connected && !chosenValue;
     }
-    const ready = PROVIDERS.filter((meta) => providerById(meta.id)?.connected && providerById(meta.id)?.lists?.length).length >= 2;
-    setText("list-readiness", ready ? "Wähle mindestens zwei Listen aus. Die übrigen Dienste kannst du bei Bedarf ergänzen." : "Verbinde mindestens zwei Konten und prüfe die Verbindungen, damit ihre verfügbaren Listen hier erscheinen.");
+    const minimum = minimumExternalTargets();
+    const ready = PROVIDERS.filter((meta) => providerById(meta.id)?.connected && providerById(meta.id)?.lists?.length).length >= minimum;
+    setText("lists-description", minimum === 1 ? "Deine gemeinsame Home-Assistant-Liste ist bereits dabei. Wähle mindestens eine Anbieter-Liste dazu." : "Wähle mindestens zwei Einkaufslisten aus. Die übrigen Dienste kannst du bei Bedarf ergänzen.");
+    setText("list-readiness", minimum === 1 ? ready ? "Die gemeinsame Home-Assistant-Liste zählt bereits mit. Wähle mindestens eine Anbieter-Liste dazu." : "Verbinde mindestens einen Anbieter. Deine gemeinsame Home-Assistant-Liste zählt bereits mit." : ready ? "Wähle mindestens zwei Listen aus. Die übrigen Dienste kannst du bei Bedarf ergänzen." : "Verbinde mindestens zwei Konten und prüfe die Verbindungen, damit ihre verfügbaren Listen hier erscheinen.");
     if (applySettings && state.settings) {
       $("sync-enabled").checked = Boolean(state.settings.enabled);
       $("sync-interval").value = state.settings.interval_seconds || 60;
@@ -382,6 +460,7 @@
   }
 
   function route() {
+    clearIntegrationToken();
     const requested = window.location.hash.slice(1) || "overview";
     const view = Object.hasOwn(VIEWS, requested) ? requested : "overview";
     for (const id of Object.keys(VIEWS)) $("view-" + id).hidden = id !== view;
@@ -394,6 +473,9 @@
   }
 
   function showAuth(session) {
+    clearIntegrationToken();
+    state.integration = null;
+    state.integrationError = null;
     resetAlexaAuth();
     state.session = session;
     state.authenticated = false;
@@ -435,17 +517,32 @@
     state.refreshing = true;
     $("refresh-status").setAttribute("aria-busy", "true");
     try {
-      const [status, settings] = await Promise.all([
+      const [status, settings, integration] = await Promise.all([
         api("status", { timeout: 20000 }),
         includeSettings || !state.settings ? api("settings", { timeout: 20000 }) : Promise.resolve(null),
+        api("integration", { timeout: 15000 }).then((data) => ({ data })).catch((error) => ({ error: error.message })),
       ]);
       if (!status || !Array.isArray(status.providers) || typeof status.sync !== "object") throw new Error("Der Status des Servers ist unvollständig. Bitte versuche es erneut.");
       state.status = status;
       if (settings) state.settings = settings;
+      const applySettings = Boolean(settings) || !state.settingsDirty;
+      if (!settings && !state.settingsDirty && state.settings) {
+        state.settings = {
+          ...state.settings,
+          enabled: Boolean(status.sync.enabled),
+          interval_seconds: Number.isInteger(status.sync.interval_seconds) ? status.sync.interval_seconds : state.settings.interval_seconds,
+          targets: Array.isArray(status.sync.targets) ? status.sync.targets : state.settings.targets,
+          propagate_deletions: typeof status.sync.propagate_deletions === "boolean" ? status.sync.propagate_deletions : state.settings.propagate_deletions,
+        };
+      }
+      if (integration.data) {
+        state.integration = integrationState(integration.data);
+        state.integrationError = null;
+      } else state.integrationError = integration.error;
       if (Array.isArray(status.events)) state.events = status.events;
       $("server-error").hidden = true;
       renderProviders();
-      renderLists(Boolean(settings));
+      renderLists(applySettings);
       renderOverview();
       renderEvents();
       setText("last-refreshed", `Aktualisiert um ${new Intl.DateTimeFormat("de-DE", { hour: "2-digit", minute: "2-digit" }).format(new Date())} Uhr`);
@@ -645,7 +742,7 @@
     await busy($("settings-save"), "Wird gespeichert …", async () => {
       const targets = PROVIDERS.map((meta) => ({ provider: meta.id, list_id: $("list-" + meta.id).value })).filter((target) => target.list_id);
       const enabled = $("sync-enabled").checked;
-      if (enabled && targets.length < 2) throw new Error("Wähle mindestens zwei Einkaufslisten aus, um den automatischen Abgleich einzuschalten.");
+      if (enabled && targets.length < minimumExternalTargets()) throw new Error(minimumExternalTargets() === 1 ? "Wähle mindestens eine Anbieter-Liste aus. Deine gemeinsame Home-Assistant-Liste zählt bereits mit." : "Wähle mindestens zwei Einkaufslisten aus, um den automatischen Abgleich einzuschalten.");
       if (!targets.every((target) => providerById(target.provider)?.connected)) throw new Error("Prüfe zuerst die ausgewählten Verbindungen oder nimm deren Listen aus dem Abgleich.");
       const settings = { enabled, interval_seconds: Number($("sync-interval").value), targets, propagate_deletions: $("sync-deletions").checked };
       await api("settings", { method: "PUT", body: settings });
@@ -664,6 +761,36 @@
     renderEvents();
     toast("Das Protokoll ist aktuell.");
   }));
+  $("integration-create-token").addEventListener("click", () => busy($("integration-create-token"), "Schlüssel wird erstellt …", async () => {
+    clearIntegrationToken();
+    const generation = state.integrationSecretGeneration;
+    state.integrationCreating = true;
+    state.integrationError = null;
+    renderIntegration();
+    try {
+      const result = await api("integration/token", { method: "POST", body: {} });
+      if (typeof result.token !== "string" || !result.token || result.token.length > 4096) throw new Error("Der Verbindungsschlüssel konnte nicht angezeigt werden. Bitte erstelle einen neuen Schlüssel.");
+      state.integration = integrationState({ ...state.integration, enabled: true, token_configured: true, instance_id: result.instance_id, suggested_url: result.suggested_url });
+      const display = generation === state.integrationSecretGeneration && state.authenticated;
+      if (display) {
+        $("integration-token").value = result.token;
+        $("integration-secret").hidden = false;
+      }
+      result.token = "";
+      await refresh();
+      if (state.authenticated) toast(display ? "Verbindungsschlüssel erstellt. Kopiere ihn jetzt in deine Home-Assistant-Integration." : "Schlüssel erstellt. Die einmalige Anzeige wurde beim Seitenwechsel geschlossen.");
+    } catch (error) {
+      state.integrationError = error.message;
+      throw error;
+    } finally {
+      state.integrationCreating = false;
+      renderIntegration();
+      renderLists();
+      renderOverview();
+    }
+  }));
+  $("integration-copy-url").addEventListener("click", () => copyIntegrationField("integration-url"));
+  $("integration-copy-token").addEventListener("click", () => copyIntegrationField("integration-token"));
   $("logout").addEventListener("click", () => busy($("logout"), "", async () => {
     await api("logout", { method: "POST", body: {} });
     state.status = null;
@@ -673,7 +800,11 @@
   }));
   $("toast-close").addEventListener("click", () => { $("toast").hidden = true; clearTimeout(state.toastTimer); });
   window.addEventListener("hashchange", () => { route(); window.scrollTo({ top: 0 }); });
+  document.addEventListener("click", (event) => {
+    if (event.target.closest?.('a[href^="#"]')) clearIntegrationToken();
+  }, true);
   document.addEventListener("visibilitychange", () => { if (!document.hidden && state.authenticated) refresh({ quiet: true }); });
+  window.addEventListener("pagehide", clearIntegrationToken);
 
   createProviderCards();
   route();
