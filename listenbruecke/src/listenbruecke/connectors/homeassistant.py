@@ -18,6 +18,7 @@ _FORMAT_ERROR = "Home Assistant hat ein unbekanntes Listenformat geliefert."
 _CONFIRM_ERROR = "Home Assistant hat die Änderung noch nicht bestätigt. Bitte die Liste neu laden."
 _LABEL_MARKER = " ⟦Menge: "
 _ALIAS_PLATFORMS = {"bring", "monsieur_cuisine"}
+_ALEXA_MIRROR_PLATFORMS = {"alexa_devices", "alexa_todo_lists"}
 
 
 def render_label(name: str, description: str) -> str:
@@ -93,6 +94,14 @@ class HomeAssistantConnector:
     async def _ensure_origins(self) -> None:
         if not self.origins_resolved or time.monotonic() - self._origins_checked_at > 300:
             await self.list_origins()
+
+    async def check_independent_source(self, list_id: str, selected_providers: set[str]) -> None:
+        """Allow Alexa through HA alone; reject a second view of direct Alexa."""
+        await self._ensure_origins()
+        if list_id not in self.origins:
+            raise ConnectorError("Die Herkunft der ausgewählten Home-Assistant-Liste ist unbekannt.")
+        if "alexa" in selected_providers and self.origins[list_id] in _ALEXA_MIRROR_PLATFORMS:
+            raise UnsupportedOperation("Diese Home-Assistant-Liste ist bereits dieselbe Alexa-Liste. Bitte Alexa direkt oder über Home Assistant auswählen.")
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         try:
