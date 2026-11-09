@@ -299,7 +299,7 @@
       button.href = "#events";
     }
     $$('[data-sync-button]').forEach((syncButton) => {
-      syncButton.disabled = state.syncing || running || !ready || !hasTargets();
+      syncButton.disabled = state.syncing || running || state.alexaAuth.running || state.alexaSubmitting || !ready || !hasTargets();
       syncButton.title = running ? "Der Abgleich läuft bereits." : !ready ? "Verbinde mindestens zwei Konten und prüfe die ausgewählten Verbindungen." : !hasTargets() ? "Wähle mindestens zwei Einkaufslisten aus und speichere die Einstellungen." : "Ausgewählte Listen jetzt abgleichen";
     });
   }

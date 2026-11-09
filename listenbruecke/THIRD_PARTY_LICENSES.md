@@ -39,6 +39,8 @@ SOFTWARE.
 The Alexa connector uses aioamazondevices 17.2.8, maintained by Simone Chemelli
 and contributors: https://github.com/chemelli74/aioamazondevices
 
+Copyright 2024 Simone Chemelli and contributors.
+
 Licensed under the Apache License, Version 2.0. The dependency includes its own
 license notice; the license text is reproduced below for redistribution.
 

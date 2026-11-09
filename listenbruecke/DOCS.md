@@ -38,6 +38,9 @@ Gespeichert wird ausschließlich die verschlüsselte Amazon-Sitzung. Passwort un
 Einmalcode werden nicht gespeichert und nach dem Absenden aus dem Formular entfernt.
 Bei einer abgelaufenen Sitzung die Anmeldung mit einem frischen Code wiederholen.
 Eine Alexa-Integration in Home Assistant ist für diesen direkten Zugang nicht nötig.
+Verlangt Amazon zusätzlich ein CAPTCHA, eine Passkey-Anmeldung oder eine andere
+Sicherheitsbestätigung, kann dieser Anmeldeweg sie nicht beantworten. Offene
+Sicherheitsabfragen im eigenen Amazon-Konto prüfen und die Anmeldung erneut versuchen.
 
 Danach die Verbindung testen und unter **Listen & Abgleich** die gewünschte
 Alexa-Einkaufsliste auswählen. Bring! und Alexa können auch ohne Monsieur Cuisine

@@ -418,6 +418,9 @@ def test_alexa_otp_login_commits_only_encrypted_session_and_explicit_connector(i
     saved = {"email": session["email"], "login_data": {"tokens": {"refresh_token": "SYNTHETIC-REFRESHED-SESSION"}}}
     client.portal.call(app.state.service.clients["alexa"].save, saved)
     assert app.state.service.store.get_secret("alexa") == saved
+    assert client.request("DELETE", "/api/connections/alexa", json={}).status_code == 200
+    assert client.get("/api/connections/alexa/auth/status").json() == {"running": False, "complete": False, "error": None}
+    assert app.state.service.store.get_secret("alexa") is None
 
 
 @pytest.mark.parametrize("result", [None, {"email": "test@example.invalid", "login_data": {"tokens": {}}, "password": "FORBIDDEN"},
@@ -454,6 +457,7 @@ def test_alexa_login_locks_configuration_sync_and_import_until_done(instance, mo
     payload = {"email": "test@example.invalid", "password": "test-password", "code": "123456"}
     assert client.post("/api/connections/alexa/auth/start", json=payload).status_code == 202
     assert client.get("/api/connections/alexa/auth/status").json()["running"]
+    assert not client.get("/api/status").json()["sync"]["running"]
     for method, path, body in [
         ("POST", "/api/connections/alexa/auth/start", payload),
         ("PUT", "/api/connections/bring", {"email": "a@example.invalid", "password": "synthetic"}),

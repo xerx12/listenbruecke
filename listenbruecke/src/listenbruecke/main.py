@@ -78,7 +78,7 @@ class Service:
                 "providers": [self.provider(p) for p in PROVIDERS],
                 "sync": {**self.settings(), "last_run": None, "last_success": None,
                          "last_error": None, "items_synced": 0, **metrics,
-                         "running": self.sync_running()},
+                         "running": self._sync_running or bool(self.manual_task and not self.manual_task.done())},
                 "events": self.store.events(12)}
 
     async def connector(self, provider):
@@ -560,6 +560,8 @@ def create_app(data_dir=None, *, factory=None, background=True):
             service.disable_for_change()
             await service.forget_client(provider)
             service.store.delete_secret(provider)
+            if provider == "alexa":
+                service.alexa_auth_status = {"running": False, "complete": False, "error": None}
         return service.provider(provider)
 
     @app.post("/api/connections/{provider}/test")
