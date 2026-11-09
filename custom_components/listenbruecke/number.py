@@ -2,6 +2,7 @@
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import EntityCategory, UnitOfTime
+from homeassistant.exceptions import HomeAssistantError
 
 from .entity import ListenbrueckeEntity
 
@@ -32,4 +33,6 @@ class IntervalNumber(ListenbrueckeEntity, NumberEntity):
         return value if type(value) is int and 30 <= value <= 3600 else None
 
     async def async_set_native_value(self, value):
+        if not isinstance(value, (int, float)) or not 30 <= value <= 3600 or value != int(value):
+            raise HomeAssistantError("Bitte ein ganzzahliges Intervall zwischen 30 und 3600 Sekunden wählen.")
         await self.async_call(self.coordinator.api.async_update_settings(interval_seconds=int(value)))

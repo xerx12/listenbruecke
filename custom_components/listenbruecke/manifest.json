@@ -1,0 +1,12 @@
+{
+  "domain": "listenbruecke",
+  "name": "Listenbrücke",
+  "codeowners": ["@xerx12"],
+  "config_flow": true,
+  "documentation": "https://xerx12.github.io/listenbruecke/",
+  "integration_type": "hub",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/xerx12/listenbruecke/issues",
+  "requirements": [],
+  "version": "0.3.0"
+}
