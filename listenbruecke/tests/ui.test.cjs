@@ -322,7 +322,8 @@ test("Alexa login clears secrets, resumes polling, reports failures, and syncs w
     await page.locator("#sync-result").filter({ hasText: "1 hinzugefügt" }).waitFor();
     await page.locator('[data-nav="overview"]').click();
     await page.locator("#toast-close").click();
-    await page.screenshot({ path: "/tmp/listenbruecke-alexa-overview.png", fullPage: true });
+    await page.mouse.move(1430, 1090);
+    await page.screenshot({ path: "/tmp/listenbruecke-alexa-overview.png", fullPage: true, animations: "disabled" });
 
     await page.locator('[data-nav="connections"]').click();
     await page.locator('[data-test="alexa"]').click();

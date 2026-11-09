@@ -4,16 +4,19 @@ No vendor authentication or network requests are made by these connectors.
 This module is a development test fixture and is not included in the wheel.
 """
 
+import asyncio
 import json
 import socket
+import sys
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import ModuleType
 
 import uvicorn
 
 from listenbruecke.main import create_app
-from listenbruecke.models import Item, ShoppingList
+from listenbruecke.models import ConnectorError, Item, ShoppingList
 from listenbruecke.store import Store
 
 
@@ -22,7 +25,8 @@ class FakeConnector:
         self.provider = provider
         self.list_id = provider + "-synthetic-list"
         self.sequence = 1
-        self.items = [Item(provider + "-1", "Test-Tomaten" if provider == "monsieur_cuisine" else "Testmilch", "500 g" if provider == "monsieur_cuisine" else "1 l")]
+        name, amount = {"monsieur_cuisine": ("Test-Tomaten", "500 g"), "alexa": ("Test-Brot", "1 Stück")}.get(provider, ("Testmilch", "1 l"))
+        self.items = [Item(provider + "-1", name, amount)]
 
     async def list_lists(self):
         return [ShoppingList(self.list_id, "Test-Einkaufsliste")]
@@ -56,6 +60,20 @@ class FakeConnector:
 
 
 def run():
+    # Replace the vendor login inside this isolated fixture process. The actual
+    # FastAPI job, session validation, encrypted store and status API still run.
+    module = ModuleType("listenbruecke.connectors.alexa")
+
+    class SyntheticAlexa:
+        @staticmethod
+        async def login(email, password, code):
+            if (email, password, code) != ("synthetic@example.invalid", "synthetic-alexa-password", "123456"):
+                raise ConnectorError("Die synthetische Anmeldung wurde abgelehnt.")
+            await asyncio.sleep(2)
+            return {"email": email, "login_data": {"tokens": {"refresh_token": "SYNTHETIC-SESSION"}}}
+
+    module.AlexaConnector = SyntheticAlexa
+    sys.modules[module.__name__] = module
     with TemporaryDirectory(prefix="listenbruecke-ui-test-") as directory:
         store = Store(Path(directory))
         store.set_secret("monsieur_cuisine", {"synthetic_test_account": True})
