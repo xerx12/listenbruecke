@@ -216,6 +216,15 @@ LISTENBRUECKE_DATA=./data .venv/bin/listenbruecke
 Die Projektseite unter `docs/` ist statisches HTML, CSS und JavaScript. Sie benötigt
 keinen Build und wird über GitHub Pages veröffentlicht.
 
+Die native HA-Integration wird getrennt mit dem echten Home-Assistant-Core getestet.
+Dafür ist **Python ab 3.14.2** erforderlich:
+
+```sh
+python3.14 -m venv .venv-ha
+.venv-ha/bin/pip install -r tests/ha_native/requirements.txt
+.venv-ha/bin/python -m pytest -q tests/ha_native
+```
+
 ## Mitmachen & Lizenz
 
 Fehler oder Ideen? [Ein Issue öffnen](https://github.com/xerx12/listenbruecke/issues)
