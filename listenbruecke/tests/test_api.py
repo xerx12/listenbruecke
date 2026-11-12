@@ -256,7 +256,8 @@ def test_oauth_success_is_consumed_once_and_credentials_are_not_returned(instanc
     calls = []
     async def complete(auth, code, verifier):
         calls.append(code)
-        result = {"jwt": "JWT-SECRET", "lidl_refresh_token": "REFRESH-SECRET"}
+        result = {"jwt": "JWT-SECRET", "lidl_refresh_token": "REFRESH-SECRET",
+                  "user_id": "synthetic-user", "companion_app_id": "synthetic-device"}
         await auth._save_credentials(result)
         return result
     with patch("listenbruecke.connectors.mc_auth.MCAuth.complete_login", complete):
@@ -267,6 +268,28 @@ def test_oauth_success_is_consumed_once_and_credentials_are_not_returned(instanc
         assert client.post("/api/connections/monsieur_cuisine/auth/complete", json=payload).status_code == 400
     assert calls == ["CODE-SECRET"]
     assert app.state.service.store.get_secret("monsieur_cuisine")["jwt"] == "JWT-SECRET"
+
+
+def test_oauth_failure_after_completed_callback_preserves_previous_selected_account(instance):
+    app, client, _ = instance
+    setup(client)
+    store = app.state.service.store
+    old = {"jwt": "SYNTHETIC-OLD-JWT", "lidl_refresh_token": "SYNTHETIC-OLD-REFRESH",
+           "user_id": "synthetic-user", "companion_app_id": "synthetic-device"}
+    store.set_secret("monsieur_cuisine", old)
+    settings = {"enabled": True, "targets": [{"provider": "monsieur_cuisine", "list_id": "shopping"}]}
+    store.set("sync_settings", settings)
+    start = client.post("/api/connections/monsieur_cuisine/auth/start", json={}).json()
+    state = parse_qs(urlsplit(start["authorization_url"]).query)["state"][0]
+    async def fail_after_callback(auth, code, verifier):
+        await auth._save_credentials({**old, "jwt": "SYNTHETIC-NEW-JWT"})
+        raise ConnectorError("Synthetischer Anmeldefehler.")
+    with patch("listenbruecke.connectors.mc_auth.MCAuth.complete_login", fail_after_callback):
+        response = client.post("/api/connections/monsieur_cuisine/auth/complete", json={"code": "SYNTHETIC-CODE", "state": state})
+    assert response.status_code == 400
+    assert store.get_secret("monsieur_cuisine") == old
+    assert store.get("sync_settings") == settings
+    assert store.get("provider_account_generations", {}) == {}
 
 
 def test_browser_helper_archive_includes_manifest_and_license(instance):
@@ -409,8 +432,9 @@ def test_alexa_otp_login_commits_only_encrypted_session_and_explicit_connector(i
     assert submitted == [("alexa@example.invalid", "SYNTHETIC-ALEXA-PASSWORD", "123456")]
     assert app.state.service.store.get_secret("alexa") == session
     assert app.state.service.provider("alexa")["connected"]
-    assert app.state.service.store.get("account_generation") == 1
-    assert app.state.service.store.get("sync_settings")["enabled"] is False
+    assert app.state.service.store.get("account_generation", 0) == 0
+    assert app.state.service.store.get("provider_account_generations") == {"alexa": 1}
+    assert app.state.service.settings()["enabled"] is False
     output = client.get("/api/status").text + client.get("/api/events").text
     assert all(secret not in output for secret in ("SYNTHETIC-ALEXA-PASSWORD", "SYNTHETIC-ALEXA-SESSION", "123456"))
     encrypted = app.state.service.store._db.execute("SELECT value FROM secrets WHERE key='alexa'").fetchone()[0]

@@ -12,13 +12,13 @@ import aiohttp
 import httpx
 
 from listenbruecke.models import AuthenticationRequired, ConnectorError, Item, ShoppingList, UnsupportedOperation
+from listenbruecke.providers import PROVIDERS
 
 CREATE, DELETE, UPDATE, DESCRIPTION = 1, 2, 4, 64
 _FORMAT_ERROR = "Home Assistant hat ein unbekanntes Listenformat geliefert."
 _CONFIRM_ERROR = "Home Assistant hat die Änderung noch nicht bestätigt. Bitte die Liste neu laden."
 _LABEL_MARKER = " ⟦Menge: "
 _ALIAS_PLATFORMS = {"bring", "monsieur_cuisine", "listenbruecke"}
-_ALEXA_MIRROR_PLATFORMS = {"alexa_devices", "alexa_todo_lists"}
 
 
 def render_label(name: str, description: str) -> str:
@@ -96,12 +96,15 @@ class HomeAssistantConnector:
             await self.list_origins()
 
     async def check_independent_source(self, list_id: str, selected_providers: set[str]) -> None:
-        """Allow Alexa through HA alone; reject a second view of direct Alexa."""
+        """Allow HA alone; reject a second view of any selected direct provider."""
         await self._ensure_origins()
         if list_id not in self.origins:
             raise ConnectorError("Die Herkunft der ausgewählten Home-Assistant-Liste ist unbekannt.")
-        if "alexa" in selected_providers and self.origins[list_id] in _ALEXA_MIRROR_PLATFORMS:
-            raise UnsupportedOperation("Diese Home-Assistant-Liste ist bereits dieselbe Alexa-Liste. Bitte Alexa direkt oder über Home Assistant auswählen.")
+        for provider in selected_providers:
+            spec = PROVIDERS.get(provider)
+            if spec and self.origins[list_id] in spec.ha_platforms:
+                raise UnsupportedOperation("Diese Home-Assistant-Liste ist bereits dieselbe " + spec.name +
+                                           "-Liste. Bitte den Anbieter direkt oder über Home Assistant auswählen.")
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         try:

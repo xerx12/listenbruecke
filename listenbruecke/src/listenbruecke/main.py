@@ -27,10 +27,11 @@ from listenbruecke.backup import BackupError, IMPORT_JSON_BYTES, apply_pending_i
 from listenbruecke.bridge import (TARGET as BRIDGE_TARGET, BridgeConnector, integration_config,
                                  integration_status, issue_token, machine_item, valid_token)
 from listenbruecke.models import ConnectorError
+from listenbruecke.providers import PROVIDERS as PROVIDER_REGISTRY
 from listenbruecke.store import Store, now
 from listenbruecke.sync import SyncEngine
 
-PROVIDERS = {"bring": "Bring!", "monsieur_cuisine": "Monsieur Cuisine", "homeassistant": "Home Assistant", "alexa": "Alexa"}
+PROVIDERS = {provider: spec.name for provider, spec in PROVIDER_REGISTRY.items()}
 DEFAULT_SETTINGS = {"enabled": False, "interval_seconds": 60, "targets": [], "propagate_deletions": False}
 COOKIE = "listenbruecke_session"
 
@@ -71,6 +72,7 @@ class Service:
     def provider(self, provider):
         data = self.provider_status[provider]
         return {"id": provider, "name": PROVIDERS[provider], "configured": bool(self.credentials(provider)),
+                "selected": any(target["provider"] == provider for target in self.settings()["targets"]),
                 "connected": data.get("connected", False), "error": data.get("error"),
                 "lists": data.get("lists", []), "last_test": data.get("last_test")}
 
@@ -95,25 +97,13 @@ class Service:
             raise ConnectorError("Bitte zuerst die Verbindung einrichten.")
         if self.factory:
             client = await self.factory(provider, credentials)
-        elif provider == "bring":
-            from listenbruecke.connectors.bring import BringConnector
-            client = BringConnector(credentials)
-        elif provider == "homeassistant":
-            from listenbruecke.connectors.homeassistant import HomeAssistantConnector
-            client = HomeAssistantConnector(self.http, credentials["url"], credentials["token"])
-        elif provider == "alexa":
-            from listenbruecke.connectors.alexa import AlexaConnector
-            async def save(value):
-                self.store.set_secret("alexa", self.validate_alexa_credentials(value))
-            client = AlexaConnector(credentials, save)
-        elif provider == "monsieur_cuisine":
-            from listenbruecke.connectors.mc_auth import MCAuth
-            from listenbruecke.connectors.monsieur import MonsieurConnector
-            async def save(value):
-                self.store.set_secret("monsieur_cuisine", value)
-            client = MonsieurConnector(MCAuth(self.http, credentials, save))
         else:
-            raise ConnectorError("Diese Verbindung ist nicht bekannt.")
+            spec = PROVIDER_REGISTRY.get(provider)
+            if spec is None:
+                raise ConnectorError("Diese Verbindung ist nicht bekannt.")
+            async def save(value):
+                self.store.set_secret(provider, spec.validate_saved(value, mode=self.mode))
+            client = spec.create(self.http, credentials, save)
         self.clients[provider] = client
         return client
 
@@ -124,47 +114,40 @@ class Service:
         self.provider_status[provider] = {"connected": False, "lists": [], "error": None, "last_test": None}
         self.store.set("provider_status:" + provider, self.provider_status[provider])
 
-    def disable_for_change(self):
+    def disable_for_change(self, provider):
+        # Unrelated optional accounts must not discard the running group's
+        # durable write intentions. A later selection still uses fresh IDs.
         settings = self.settings()
-        settings["enabled"] = False
-        self.store.set("sync_settings", settings)
-        self.store.set("account_generation", self.store.get("account_generation", 0) + 1)
+        selected = any(target["provider"] == provider for target in settings["targets"])
+        if selected:
+            # Persist the pause before identity/credentials change, including
+            # when the process stops between individual SQLite commits.
+            settings["enabled"] = False
+            self.store.set("sync_settings", settings)
+        versions = self.store.get("provider_account_generations", {})
+        versions[provider] = versions.get(provider, 0) + 1
+        self.store.set("provider_account_generations", versions)
+        if selected:
+            self.store.set("account_generation", self.store.get("account_generation", 0) + 1)
 
     @staticmethod
     def validate_alexa_credentials(value):
-        if (not isinstance(value, dict) or set(value) != {"email", "login_data"}
-                or not isinstance(value["email"], str) or not value["email"]
-                or not isinstance(value["login_data"], dict) or not value["login_data"]):
-            raise ConnectorError("Die Amazon-Anmeldung konnte nicht sicher gespeichert werden. Bitte erneut anmelden.")
-        def contains_login_input(data):
-            if isinstance(data, dict):
-                return any(str(key).casefold() in {"password", "code", "otp", "otp_secret", "mfa_seed", "totp_secret"}
-                           or contains_login_input(item) for key, item in data.items())
-            return isinstance(data, list) and any(contains_login_input(item) for item in data)
-        if contains_login_input(value["login_data"]):
-            raise ConnectorError("Die Amazon-Anmeldung konnte nicht sicher gespeichert werden. Bitte erneut anmelden.")
-        # Only the completed session is accepted, never the submitted login form.
-        return {"email": value["email"], "login_data": json.loads(json.dumps(value["login_data"]))}
+        return PROVIDER_REGISTRY["alexa"].validate_saved(value)
 
     def safe_error(self, error, *, provider=None):
         if provider == "alexa":
             return "Die Alexa-Verbindung konnte nicht geprüft werden. Bitte die Amazon-Anmeldung erneut durchführen."
+        # SDK responses can contain nested cookies/tokens. Inspect every saved
+        # string, including future providers, without logging the response.
         message = str(error)
-        for provider in PROVIDERS:
-            credentials = self.credentials(provider) or {}
-            for key in ("email", "password", "token", "jwt", "lidl_refresh_token"):
-                value = credentials.get(key)
-                if isinstance(value, str) and value and value in message:
-                    return "Die Verbindung konnte nicht geprüft werden. Bitte Einstellungen und Erreichbarkeit prüfen."
-        def contains_session_value(value):
+        def contains_secret(value):
             if isinstance(value, dict):
-                return any(contains_session_value(item) for item in value.values())
+                return any(contains_secret(item) for item in value.values())
             if isinstance(value, list):
-                return any(contains_session_value(item) for item in value)
+                return any(contains_secret(item) for item in value)
             return isinstance(value, str) and len(value) >= 4 and value in message
-        alexa = self.credentials("alexa") or {}
-        if contains_session_value(alexa.get("login_data", {})):
-            return "Die Alexa-Verbindung konnte nicht geprüft werden. Bitte die Amazon-Anmeldung erneut durchführen."
+        if any(contains_secret(self.credentials(name) or {}) for name in PROVIDERS):
+            return "Die Verbindung konnte nicht geprüft werden. Bitte Einstellungen und Erreichbarkeit prüfen."
         return message
 
     async def test(self, provider):
@@ -237,7 +220,8 @@ class Service:
 
     async def validate_target_mirrors(self, targets, clients=None):
         selected = {target["provider"] for target in targets}
-        if not {"alexa", "homeassistant"} <= selected:
+        if "homeassistant" not in selected or not any(
+                PROVIDER_REGISTRY[provider].ha_platforms for provider in selected):
             return
         client = clients["homeassistant"] if clients is not None else await self.connector("homeassistant")
         check = getattr(client, "check_independent_source", None)
@@ -261,7 +245,7 @@ class Service:
                     value = await asyncio.wait_for(AlexaConnector.login(**transient), timeout=90)
                     credentials = self.validate_alexa_credentials(value)
                     transient.clear()
-                    self.disable_for_change()
+                    self.disable_for_change("alexa")
                     await self.forget_client("alexa")
                     self.store.set_secret("alexa", credentials)
                     result = await self.test("alexa")
@@ -525,7 +509,7 @@ def create_app(data_dir=None, *, factory=None, background=True):
                 "sync": {key: status["sync"][key] for key in
                          ("enabled", "interval_seconds", "running", "last_success", "last_error", "items_synced")},
                 "providers": [{key: provider[key] for key in
-                               ("id", "name", "configured", "connected", "last_test", "error")}
+                               ("id", "name", "configured", "selected", "connected", "last_test", "error")}
                               for provider in status["providers"]]}
 
     @app.get("/api/ha/v1/items")
@@ -638,6 +622,10 @@ def create_app(data_dir=None, *, factory=None, background=True):
             service.wakeup.set()
         return {"ok": True, "requires_restart": True, "summary": summary}
 
+    @app.get("/api/providers")
+    async def providers():
+        return {"providers": [spec.public() for spec in PROVIDER_REGISTRY.values()]}
+
     @app.get("/api/events")
     async def events():
         return app.state.service.store.events()
@@ -649,34 +637,10 @@ def create_app(data_dir=None, *, factory=None, background=True):
     @app.put("/api/connections/{provider}")
     async def save_connection(provider: str, data: dict):
         check_provider(provider)
-        if provider == "monsieur_cuisine":
-            raise HTTPException(400, "Bitte die Browseranmeldung bei Lidl verwenden.")
-        if provider == "alexa":
-            raise HTTPException(400, "Bitte die Amazon-Anmeldung mit Passwort und aktuellem Einmalcode verwenden.")
-        if provider == "bring":
-            if (set(data) != {"email", "password"} or not isinstance(data.get("email"), str)
-                    or "@" not in data["email"] or len(data["email"]) > 320
-                    or not isinstance(data.get("password"), str) or not 1 <= len(data["password"]) <= 1024):
-                raise HTTPException(400, "Bitte E-Mail und Passwort des Bring!-Kontos eingeben.")
-            credentials = {"email": data["email"].strip(), "password": data["password"]}
-        elif data == {"auto": True} and app.state.service.mode == "addon":
-            credentials = {"auto": True}
-        else:
-            url = data.get("url", "")
-            token = data.get("token", "")
-            try:
-                parsed = urlsplit(url)
-                _ = parsed.port
-                valid = (parsed.scheme in ("http", "https") and parsed.hostname and not parsed.username
-                         and not parsed.password and not parsed.query and not parsed.fragment)
-            except (ValueError, TypeError):
-                valid = False
-            if not valid or not isinstance(token, str) or not 1 <= len(token) <= 8192:
-                raise HTTPException(400, "Bitte die Home-Assistant-Adresse und ein Zugriffstoken eingeben.")
-            credentials = {"url": url.rstrip("/"), "token": token}
         service = app.state.service
+        credentials = PROVIDER_REGISTRY[provider].validate_input(data, mode=service.mode)
         async with service.configure():
-            service.disable_for_change()
+            service.disable_for_change(provider)
             await service.forget_client(provider)
             service.store.set_secret(provider, credentials)
             service.store.event("info", PROVIDERS[provider] + ": Einstellungen gespeichert. Bitte Verbindung testen.")
@@ -687,7 +651,7 @@ def create_app(data_dir=None, *, factory=None, background=True):
         check_provider(provider)
         service = app.state.service
         async with service.configure():
-            service.disable_for_change()
+            service.disable_for_change(provider)
             await service.forget_client(provider)
             service.store.delete_secret(provider)
             if provider == "alexa":
@@ -729,16 +693,19 @@ def create_app(data_dir=None, *, factory=None, background=True):
         if not isinstance(code, str) or not isinstance(state, str) or not 1 <= len(code) <= 4096 or not 1 <= len(state) <= 1024:
             raise HTTPException(400, "Bitte das vollständige Anmeldeergebnis aus dem Browserhelfer einfügen.")
         service = app.state.service
+        completed = {}
         async def save(credentials):
-            service.store.set_secret("monsieur_cuisine", credentials)
+            completed.update(PROVIDER_REGISTRY["monsieur_cuisine"].validate_saved(credentials))
         async with service.configure():
             pending = service.store.consume_secret("oauth:" + state)
             if not pending or pending["expires"] < time.time():
                 raise HTTPException(400, "Die Anmeldung ist abgelaufen oder wurde schon verwendet. Bitte neu beginnen.")
             auth = MCAuth(service.http, {}, save)
             await auth.complete_login(code, pending["verifier"])
-            service.disable_for_change()
+            credentials = PROVIDER_REGISTRY["monsieur_cuisine"].validate_saved(completed)
+            service.disable_for_change("monsieur_cuisine")
             await service.forget_client("monsieur_cuisine")
+            service.store.set_secret("monsieur_cuisine", credentials)
             return await service.test("monsieur_cuisine")
 
     @app.get("/api/browser-helper.zip")
