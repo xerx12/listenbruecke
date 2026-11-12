@@ -113,7 +113,8 @@ einen Registry-Eintrag. [Leitfaden für Mitwirkende](../CONTRIBUTING.md).
 
 ## Listen auswählen
 
-Unter **Listen & Abgleich** mindestens zwei Anbieterlisten auswählen. Eine über
+Unter **Listen & Abgleich** mindestens zwei Anbieterlisten auswählen. Mit aktivierter
+gemeinsamer Listenbrücke-Liste genügt eine externe Anbieter-Liste. Eine über
 Bring! eingebundene HA-Liste wird nicht nochmals angeboten. Automatischen Abgleich
 aktivieren und speichern. Das Intervall kann 30 bis 3600 Sekunden betragen. Je nach
 Anbieter verzögern sich Anzeige und Bestätigung einer Änderung um dessen Abrufintervall.

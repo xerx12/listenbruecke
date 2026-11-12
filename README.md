@@ -191,7 +191,8 @@ sichere Sitzungscookies. Standardmäßig sind lokale Adressen erlaubt.
 6. **Cookidoo (optional):** E-Mail, Passwort sowie Land und Sprache des eigenen
    Cookidoo-Kontos eintragen und testen. Nach erfolgreicher Anmeldung werden nur
    die verschlüsselten Sitzungstoken gespeichert.
-7. **Listen & Abgleich:** Mindestens zwei gewünschte Listen auswählen, Intervall festlegen und
+7. **Listen & Abgleich:** Mindestens zwei gewünschte Listen auswählen; mit der
+   gemeinsamen Listenbrücke-Liste genügt eine externe Anbieter-Liste. Intervall festlegen und
    speichern. Danach den automatischen Abgleich aktivieren.
 
 Weitere Einrichtung, Fehlerbehebung und Backups: [Dokumentation](listenbruecke/DOCS.md).

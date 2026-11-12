@@ -20,6 +20,7 @@ dependencies = [
   "aioamazondevices==17.2.8",
   "cookidoo-api==0.19.0",
   "gkeepapi==0.17.1",
+  "gpsoauth==3.0.0",
 ]
 
 [project.optional-dependencies]
