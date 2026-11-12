@@ -1,12 +1,7 @@
 "use strict";
 
 (() => {
-  const PROVIDERS = [
-    { id: "monsieur_cuisine", name: "Monsieur Cuisine", icon: "pot", className: "cuisine-icon", description: "Rezepte und Einkäufe aus deiner Küche." },
-    { id: "bring", name: "Bring!", icon: "shopping", className: "bring-icon", description: "Gemeinsam planen. Gemeinsam einkaufen." },
-    { id: "alexa", name: "Amazon Alexa", icon: "alexa", className: "alexa-icon", description: "Deine Einkaufsliste per Sprache ergänzen." },
-    { id: "homeassistant", name: "Home Assistant", icon: "home", className: "ha-icon", description: "Deine Einkaufsliste im smarten Zuhause." },
-  ];
+  let PROVIDERS = [];
   const VIEWS = { overview: "Übersicht", connections: "Verbindungen", lists: "Listen & Abgleich", events: "Protokoll" };
   const state = {
     session: null,
@@ -126,6 +121,132 @@
   function setPill(element, info) {
     element.textContent = info.label;
     element.className = `pill ${info.className}`;
+  }
+
+  async function loadProviders() {
+    if (PROVIDERS.length) return;
+    const result = await api("providers");
+    if (!Array.isArray(result.providers) || !result.providers.length) throw new Error("Die Anbieter konnten nicht geladen werden.");
+    PROVIDERS = result.providers;
+    for (const provider of PROVIDERS) {
+      if (!$("connection-" + provider.id)) createConnectionForm(provider);
+    }
+    createProviderCards();
+  }
+
+  function createConnectionForm(provider) {
+    const panel = document.createElement("section");
+    panel.className = "panel connection-panel";
+    panel.id = "connection-" + provider.id;
+    const heading = document.createElement("div");
+    heading.className = "connection-heading";
+    const mark = document.createElement("span");
+    mark.className = "provider-icon " + provider.className;
+    mark.append(icon(provider.icon));
+    const title = document.createElement("div");
+    const name = document.createElement("h2");
+    name.textContent = provider.name;
+    const description = document.createElement("p");
+    description.textContent = provider.description;
+    title.append(name, description);
+    const pill = document.createElement("span");
+    pill.className = "pill neutral";
+    pill.dataset.providerPill = provider.id;
+    pill.textContent = "Nicht eingerichtet";
+    heading.append(mark, title, pill);
+    const error = document.createElement("p");
+    error.className = "provider-error inline-error";
+    error.dataset.providerError = provider.id;
+    error.setAttribute("role", "status");
+    error.hidden = true;
+    panel.append(heading, error);
+    for (const hint of provider.hints || []) {
+      const note = document.createElement("p");
+      note.className = "form-hint provider-hint";
+      note.textContent = hint;
+      panel.append(note);
+    }
+    if (provider.docs_url) {
+      const help = document.createElement("a");
+      const url = new URL(provider.docs_url, window.location.href);
+      if (url.protocol === "https:") {
+        help.href = url.href;
+        help.target = "_blank";
+        help.rel = "noopener noreferrer";
+        help.className = "text-link provider-help";
+        help.textContent = "Anleitung zur Anmeldung";
+        help.append(icon("external"));
+        panel.append(help);
+      }
+    }
+    const form = document.createElement("form");
+    form.id = provider.id + "-form";
+    form.className = "connection-form";
+    const row = document.createElement("div");
+    row.className = "field-row provider-fields";
+    for (const field of provider.fields || []) {
+      const group = document.createElement("div");
+      group.className = "field";
+      const label = document.createElement("label");
+      label.htmlFor = provider.id + "-" + field.name;
+      label.textContent = field.label;
+      const input = document.createElement(field.options ? "select" : "input");
+      input.id = label.htmlFor;
+      input.name = field.name;
+      input.required = Boolean(field.required);
+      input.autocomplete = field.autocomplete || "off";
+      if (field.options) {
+        for (const option of field.options) {
+          const entry = document.createElement("option");
+          entry.value = typeof option === "string" ? option : option.value;
+          entry.textContent = typeof option === "string" ? option : option.label;
+          input.append(entry);
+        }
+      } else {
+        input.type = ["email", "password", "text"].includes(field.type) ? field.type : "text";
+        if (field.placeholder) input.placeholder = field.placeholder;
+      }
+      if (field.default !== undefined) input.defaultValue = input.value = field.default;
+      group.append(label, input);
+      row.append(group);
+    }
+    const actions = document.createElement("div");
+    actions.className = "form-actions";
+    const save = document.createElement("button");
+    save.type = "submit";
+    save.className = "button primary";
+    save.append(icon("link"));
+    const saveLabel = document.createElement("span");
+    saveLabel.dataset.label = "";
+    saveLabel.textContent = "Speichern & testen";
+    save.append(saveLabel);
+    const test = document.createElement("button");
+    test.type = "button";
+    test.className = "button secondary";
+    test.dataset.test = provider.id;
+    const testLabel = document.createElement("span");
+    testLabel.dataset.label = "";
+    testLabel.textContent = "Verbindung testen";
+    test.append(testLabel);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "text-button danger";
+    remove.dataset.disconnect = provider.id;
+    remove.textContent = "Zugang entfernen";
+    remove.hidden = true;
+    actions.append(save, test, remove);
+    form.append(row, actions);
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const credentials = Object.fromEntries(new FormData(form));
+      await busy(save, "Verbindung wird geprüft …", () => saveAndTest(provider.id, credentials, form));
+    });
+    const lastTest = document.createElement("p");
+    lastTest.className = "last-test";
+    lastTest.dataset.lastTest = provider.id;
+    lastTest.textContent = "Noch nicht geprüft";
+    panel.append(form, lastTest);
+    $("ha-integration").before(panel);
   }
 
   function createProviderCards() {
@@ -272,6 +393,7 @@
     const info = active ? { label: "Anmeldung läuft", className: "pending" } : auth.error && !provider?.connected ? { label: "Anmeldung prüfen", className: "error" } : connectionState(provider);
     setPill(document.querySelector('[data-provider-pill="alexa"]'), info);
     const card = document.querySelector('[data-provider-card="alexa"]');
+    if (!card) return;
     setPill(card.querySelector(".pill"), info);
     card.querySelector(".provider-card-link span").textContent = active ? "Anmeldung ansehen" : provider?.connected ? "Verbindung ansehen" : provider?.configured ? "Verbindung prüfen" : "Jetzt verbinden";
   }
@@ -336,13 +458,13 @@
     const running = Boolean(sync.running);
     const ready = connectionsReady();
     const minimum = minimumExternalTargets();
-    setText("nav-connection-count", `${connectedCount}/${PROVIDERS.length}`);
-    setText("setup-progress", `${connectedCount} von ${PROVIDERS.length} verbunden`);
+    setText("nav-connection-count", String(connectedCount));
+    setText("setup-progress", `${connectedCount} verbunden`);
     setText("app-version", state.status?.version ? `Version ${state.status.version}` : "Listenbrücke");
     setText("app-mode", state.status?.mode === "addon" || state.session?.ingress ? "HA-Add-on" : "Selbst gehostet");
     $("global-dot").className = `status-dot ${running ? "live" : sync.last_error ? "error" : enabled && ready ? "live" : ""}`;
     setText("global-status", running ? "Abgleich läuft" : enabled ? !ready ? "Verbindung fehlt" : sync.last_error ? "Abgleich prüfen" : "Abgleich aktiv" : "Abgleich pausiert");
-    setText("global-description", running ? "Deine Listen werden abgeglichen" : enabled ? `Prüfung alle ${sync.interval_seconds || 60} Sekunden` : `${connectedCount} von ${PROVIDERS.length} Konten verbunden`);
+    setText("global-description", running ? "Deine Listen werden abgeglichen" : enabled ? `Prüfung alle ${sync.interval_seconds || 60} Sekunden` : `${connectedCount} Konten verbunden`);
     setPill($("sync-pill"), { label: running ? "Läuft" : enabled ? sync.last_error ? "Hinweis" : "Aktiv" : "Pausiert", className: running ? "pending" : enabled ? sync.last_error ? "pending" : "success" : "neutral" });
     setText("last-run", dateTime(sync.last_run, "Noch kein Durchlauf"));
     setText("last-success", dateTime(sync.last_success));
@@ -483,7 +605,7 @@
     $("app").hidden = true;
     $("auth-screen").hidden = false;
     $("auth-form").reset();
-    ["bring-form", "ha-form", "mc-auth-form", "alexa-form"].forEach((id) => $(id).reset());
+    $$(".connection-panel form").forEach((form) => form.reset());
     $("mc-auth-fallback").hidden = true;
     $("mc-auth-fallback").removeAttribute("href");
     $("auth-error").hidden = true;
@@ -501,6 +623,7 @@
   }
 
   async function showApp(session) {
+    await loadProviders();
     state.session = session;
     state.authenticated = true;
     $("boot").hidden = true;
@@ -726,14 +849,18 @@
     });
   });
 
-  $$('[data-test]').forEach((button) => button.addEventListener("click", () => busy(button, "Wird geprüft …", () => testProvider(button.dataset.test))));
-  $$('[data-disconnect]').forEach((button) => button.addEventListener("click", () => busy(button, "Zugang wird entfernt …", async () => {
-    const id = button.dataset.disconnect;
-    await api(`connections/${id}`, { method: "DELETE", body: {} });
-    if (id === "alexa") resetAlexaAuth();
-    await refresh();
-    toast("Der gespeicherte Zugang wurde entfernt.");
-  })));
+  document.addEventListener("click", (event) => {
+    const test = event.target.closest?.("[data-test]");
+    if (test) busy(test, "Wird geprüft …", () => testProvider(test.dataset.test));
+    const remove = event.target.closest?.("[data-disconnect]");
+    if (remove) busy(remove, "Zugang wird entfernt …", async () => {
+      const id = remove.dataset.disconnect;
+      await api(`connections/${id}`, { method: "DELETE", body: {} });
+      if (id === "alexa") resetAlexaAuth();
+      await refresh();
+      toast("Der gespeicherte Zugang wurde entfernt.");
+    });
+  });
 
   $("settings-form").addEventListener("input", () => { state.settingsDirty = true; });
   $("settings-form").addEventListener("change", () => { state.settingsDirty = true; });
@@ -806,7 +933,6 @@
   document.addEventListener("visibilitychange", () => { if (!document.hidden && state.authenticated) refresh({ quiet: true }); });
   window.addEventListener("pagehide", clearIntegrationToken);
 
-  createProviderCards();
   route();
   renderProviders();
   renderLists();

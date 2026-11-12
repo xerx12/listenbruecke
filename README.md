@@ -18,7 +18,7 @@
 
 <p align="center">
   <a href="https://github.com/xerx12/listenbruecke/actions/workflows/tests.yml"><img src="https://github.com/xerx12/listenbruecke/actions/workflows/tests.yml/badge.svg" alt="Automatisierte Tests"></a>
-  &nbsp; <strong>v0.3.1 · experimentell</strong> &nbsp; · &nbsp; <a href="LICENSE">MIT-Lizenz</a>
+  &nbsp; <strong>v0.4.0 · experimentell</strong> &nbsp; · &nbsp; <a href="LICENSE">MIT-Lizenz</a>
 </p>
 
 ![Listenbrücke: Übersicht der Verbindungen und des Abgleichs, ohne persönliche Kontodaten](docs/assets/interface.png)
@@ -32,7 +32,8 @@ deine Zurufe entgegen und das Zuhause läuft mit Home Assistant. Listenbrücke g
 ab, damit du Einträge und Abhakstatus zusammenhalten kannst.
 
 - **Konten verbinden und testen:** Bring!-Anmeldung, Lidl-Anmeldung im eigenen
-  Browser, Amazon-Anmeldung mit Authenticator-Code und eine getrennte Home-Assistant-Liste.
+  Browser, Amazon-Anmeldung mit Authenticator-Code, Google Keep per Master-Token,
+  Cookidoo und eine getrennte Home-Assistant-Liste.
 - **Artikel und Mengen erhalten:** Namen und Mengen werden als Text abgeglichen.
   Verschiedene Mengen und mehrfach vorkommende Zutaten bleiben unterscheidbar.
 - **Abhaken und wieder öffnen:** Der Status bekannter Einträge wird beim nächsten
@@ -49,33 +50,54 @@ ab, damit du Einträge und Abhakstatus zusammenhalten kannst.
 
 Eine Bring!-Liste, die bereits in Home Assistant angezeigt wird, ist dieselbe Liste.
 Sie wird nicht zusätzlich als unabhängige HA-Liste verbunden. **Eine eigene lokale
-Home-Assistant-Liste ist optional**. Du kannst beliebige zwei bis vier Anbieter
+Home-Assistant-Liste ist optional**. Du kannst beliebige zwei bis sechs Anbieter
 verbinden, etwa Bring! und Alexa. Pro Anbieter wird eine Liste abgeglichen.
 Mit der gemeinsamen Listenbrücke-Liste genügt ein externer Anbieter: Die lokale
 Liste bildet dann die zweite Seite des Abgleichs.
 
 ## Stand
 
-**Version 0.3.1 ist experimentell.** Tests prüfen die Anbieter-Anbindungen und den
+**Version 0.4.0 ist experimentell.** Tests prüfen die Anbieter-Anbindungen und den
 Abgleich mit simulierten Antworten sowie die echte lokale Weboberfläche mit
 synthetischen Konten. Anmeldung und vollständiger Abgleich müssen zusätzlich mit
 den eigenen Konten geprüft werden. Die inoffiziellen Anbieter-Schnittstellen können
 sich ändern.
 
-Bei **Monsieur-Cuisine-Rezeptzutaten** wird ausschließlich der Erledigt-Status
+Bei **Rezeptzutaten in Monsieur Cuisine und Cookidoo** wird ausschließlich der Erledigt-Status
 zurückgeschrieben. Namen, Mengen und einzelne Löschungen dieser Zutaten sind
 geschützt. Freie Einträge unterstützen Anlegen, Ändern, Abhaken und Löschen.
 
-| Funktion | Bring! | MC: freie Einträge | MC: Rezeptzutaten | Alexa | Eigene HA-Liste |
-| --- | --- | --- | --- | --- | --- |
-| Lesen | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Anlegen | ✓ | ✓ | – | ✓ | ✓ |
-| Name und Mengenangabe ändern | ✓ | ✓ | geschützt | ✓¹ | ✓¹ |
-| Abhaken / wieder öffnen | ✓ | ✓ | ✓ | ✓ | ✓ |
-| Einzelnen Eintrag löschen² | ✓ | ✓ | geschützt | ✓ | ✓ |
+| Funktion | Bring! | MC / Cookidoo: frei | MC / Cookidoo: Rezept | Alexa | Google Keep | Eigene HA-Liste |
+| --- | --- | --- | --- | --- | --- | --- |
+| Lesen | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Anlegen | ✓ | ✓ | – | ✓ | ✓ | ✓ |
+| Name und Mengenangabe ändern | ✓ | ✓¹ | geschützt | ✓¹ | ✓¹ | ✓¹ |
+| Abhaken / wieder öffnen | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Einzelnen Eintrag löschen² | ✓ | ✓ | geschützt | ✓ | ✓ | ✓ |
 
-¹ In Alexa und einer nativen HA-Einkaufsliste steht die Mengenangabe im Artikeltext.
+¹ Ohne eigenes Mengenfeld bleibt die Mengenangabe im Artikeltext erhalten.
 ² Übergreifendes Löschen muss ausdrücklich eingeschaltet werden.
+
+Alle Anbieter sind optional. Unter **Verbindungen** nur die eigenen Konten
+anmelden und testen, anschließend die gewünschten Listen auswählen. Google Keep
+und Cookidoo sind neue, experimentelle Anbindungen; sie wurden mit simulierten
+Anbieterantworten geprüft, noch nicht mit einem echten Google- oder Cookidoo-Konto.
+
+**Google Keep:** Die Google-/Assistant-Einkaufsliste liegt inzwischen in Keep
+([Google-Hilfe](https://support.google.com/assistant/answer/14171370)). Der optionale
+Connector verwendet die inoffizielle mobile API. Ein Master-Token besitzt
+weitreichenden Zugriff auf das Google-Konto; technisch werden beim Abrufen alle
+Keep-Notizen geladen, geändert wird ausschließlich die ausgewählte Listen-Notiz.
+Ein separates Google-Konto mit geteilter Einkaufsliste verringert diesen Zugriff.
+Die Anmeldung ist daher eine erweiterte Einrichtung, kein gewöhnlicher Google-Login.
+Google Tasks ist ein anderes Produkt und kann bei Bedarf über seine vorhandene
+Home-Assistant-Integration angebunden werden.
+
+**Thermomix / Cookidoo:** Die Cookidoo-Einkaufsliste enthält Rezeptzutaten und freie
+Zusatzkäufe. Neue Artikel werden als Zusatzkäufe angelegt. Mengen bleiben Text;
+Rezeptzutaten lassen sich nur abhaken und wieder öffnen. Eine Anmeldung mit
+zusätzlichem CAPTCHA oder einer Sicherheitsabfrage kann die inoffizielle Anbindung
+verhindern. Die App steuert keinen Thermomix und benötigt keinen Gerätezugriff.
 
 ## Installation
 
@@ -163,7 +185,13 @@ sichere Sitzungscookies. Standardmäßig sind lokale Adressen erlaubt.
    Eine zusätzliche Alexa-Integration in Home Assistant ist dafür nicht nötig.
 4. **Home Assistant:** Im Add-on über den Supervisor verfügbar. Im Docker-Betrieb
    kann bei Bedarf eine Instanz-URL mit Zugriffstoken eingetragen werden.
-5. **Listen & Abgleich:** Mindestens zwei gewünschte Listen auswählen, Intervall festlegen und
+5. **Google Keep (optional):** Google-E-Mail und den selbst erstellten Master-Token
+   ausschließlich in der eigenen App eingeben. Kein Google-Passwort in Listenbrücke
+   eingeben. [Einrichtung und Zugriffsumfang](listenbruecke/DOCS.md#google-keep-optional).
+6. **Cookidoo (optional):** E-Mail, Passwort sowie Land und Sprache des eigenen
+   Cookidoo-Kontos eintragen und testen. Nach erfolgreicher Anmeldung werden nur
+   die verschlüsselten Sitzungstoken gespeichert.
+7. **Listen & Abgleich:** Mindestens zwei gewünschte Listen auswählen, Intervall festlegen und
    speichern. Danach den automatischen Abgleich aktivieren.
 
 Weitere Einrichtung, Fehlerbehebung und Backups: [Dokumentation](listenbruecke/DOCS.md).
@@ -192,7 +220,7 @@ Geschützte Rezeptzutaten werden niemals durch Entfernen des gesamten Rezepts ge
 - Für Backups immer **Datenbank und Schlüssel zusammen** sichern.
 - Das lokale Oberfläche-Passwort wird mit gesalzenem Scrypt gehasht; Sitzungen nutzen
   HttpOnly-Cookies. API-Antworten enthalten keine gespeicherten Passwörter oder Tokens.
-- Bring!, Monsieur Cuisine und Alexa benötigen weiterhin die Cloud-Dienste der Anbieter.
+- Bring!, Monsieur Cuisine, Alexa, Google Keep und Cookidoo benötigen weiterhin die Cloud-Dienste der Anbieter.
   Es gibt keinen zusätzlichen Listenbrücke-Cloud-Dienst.
 - Reale Konten, Tokens, App-Daten und lokale Laufzeitdateien gehören nicht in Git
   oder öffentliche Fehlerberichte.
@@ -237,3 +265,11 @@ und synthetische Beispieldaten veröffentlichen.
 **Inoffiziell:** Keine Verbindung, Unterstützung oder Empfehlung durch Bring! Labs,
 Lidl, Monsieur Cuisine, Tecpal, Amazon oder Home Assistant. Produktnamen gehören ihren
 jeweiligen Inhabern.
+
+## Weitere Anbieter beitragen
+
+Neue Dienste können über einen eigenen Connector und einen Eintrag in der zentralen
+Anbieter-Registry ergänzt werden. Oberfläche, Verbindungstest, Listenauswahl und
+HA-Verbindungsentitäten verwenden diese Angaben. Es werden nur die ausgewählten
+Listen abgeglichen; ein neu eingerichtetes, noch nicht ausgewähltes Konto verändert
+den laufenden Abgleich nicht. [Leitfaden für Beiträge](CONTRIBUTING.md).

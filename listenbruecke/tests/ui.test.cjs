@@ -8,6 +8,24 @@ const path = require("node:path");
 const { test } = require("node:test");
 const { chromium } = require(process.env.PLAYWRIGHT_MODULE || "playwright");
 
+// Public provider metadata supplied by the registry endpoint. No account secrets.
+const providerSpecs = [
+  { id: "monsieur_cuisine", name: "Monsieur Cuisine", icon: "pot", className: "cuisine-icon" },
+  { id: "bring", name: "Bring!", icon: "shopping", className: "bring-icon" },
+  { id: "alexa", name: "Amazon Alexa", icon: "alexa", className: "alexa-icon" },
+  { id: "homeassistant", name: "Home Assistant", icon: "home", className: "ha-icon" },
+  { id: "google_keep", name: "Google Keep", icon: "google", className: "google-icon", fields: [
+    { name: "email", label: "Google-E-Mail-Adresse", type: "email", required: true },
+    { name: "master_token", label: "Master-Token", type: "password", required: true },
+  ], hints: ["Der Master-Token erlaubt weitreichenden Kontozugriff."], docs_url: "https://gkeepapi.readthedocs.io/en/latest/#authenticating" },
+  { id: "cookidoo", name: "Cookidoo", icon: "cookidoo", className: "cookidoo-icon", fields: [
+    { name: "email", label: "E-Mail-Adresse", type: "email", required: true },
+    { name: "password", label: "Passwort", type: "password", required: true },
+    { name: "country", label: "Land", type: "text", required: true, default: "de" },
+    { name: "language", label: "Sprache", type: "text", required: true, default: "de-DE" },
+  ] },
+].map((spec) => ({ description: "Optionaler Anbieter", auth_kind: "credentials", ...spec }));
+
 test("local setup, provider connections, optional HA list, sync, and ingress layout", { timeout: 60000 }, async () => {
   const prefix = "/ingress/browser-test/";
   const server = http.createServer(async (request, response) => {
@@ -36,6 +54,7 @@ test("local setup, provider connections, optional HA list, sync, and ingress lay
     { id: "homeassistant", name: "Home Assistant", configured: false, connected: false, error: null, lists: [], last_test: null },
     { id: "alexa", name: "Amazon Alexa", configured: false, connected: false, error: null, lists: [], last_test: null },
   ];
+  providers.push(...providerSpecs.filter((spec) => !providers.some((provider) => provider.id === spec.id)).map(({ id, name }) => ({ id, name, configured: false, connected: false, error: null, lists: [], last_test: null })));
   const status = { version: "test", mode: "standalone", providers, sync: { enabled: false, interval_seconds: 60, last_run: null, last_success: null, last_error: null, items_synced: 0 }, events: [] };
   await page.route("**/api/**", async (route) => {
     const request = route.request();
@@ -44,6 +63,7 @@ test("local setup, provider connections, optional HA list, sync, and ingress lay
     const body = request.postDataJSON();
     calls.push({ endpoint, method, body, contentType: request.headers()["content-type"] });
     const respond = (json, code = 200) => route.fulfill({ status: code, contentType: "application/json", body: JSON.stringify(json) });
+    if (endpoint === "providers") return respond({ providers: providerSpecs });
     if (endpoint === "session") return respond(session);
     if (endpoint === "setup" || endpoint === "login") {
       session = { authenticated: true, setup_required: false, ingress: false };
@@ -70,7 +90,7 @@ test("local setup, provider connections, optional HA list, sync, and ingress lay
       return respond({ ok: true, added: 2, updated: 1, removed: 0, conflicts: 0, message: "Testabgleich abgeschlossen." });
     }
     if (endpoint === "connections/monsieur_cuisine/auth/start") return respond({ authorization_url: origin + "/test-lidl-login" });
-    const match = endpoint.match(/^connections\/(bring|monsieur_cuisine|homeassistant)(?:\/(test|auth\/complete))?$/);
+    const match = endpoint.match(/^connections\/(bring|monsieur_cuisine|homeassistant|google_keep|cookidoo)(?:\/(test|auth\/complete))?$/);
     if (match) {
       const provider = providers.find((entry) => entry.id === match[1]);
       if (method === "DELETE") { provider.configured = false; provider.connected = false; provider.lists = []; return respond({ ok: true }); }
@@ -98,8 +118,8 @@ test("local setup, provider connections, optional HA list, sync, and ingress lay
     await page.locator("#app").waitFor({ state: "visible" });
     await page.locator("#last-refreshed").filter({ hasText: "Aktualisiert" }).waitFor();
     assert.match(await page.locator("#last-run").textContent(), /Noch kein/);
-    assert.equal(await page.locator("[data-provider-card]").count(), 4);
-    assert.equal(await page.locator("#nav-connection-count").textContent(), "0/4");
+    assert.equal(await page.locator("[data-provider-card]").count(), 6);
+    assert.equal(await page.locator("#nav-connection-count").textContent(), "0");
     assert.equal(await page.locator("[data-sync-button]").first().isDisabled(), true);
     await page.screenshot({ path: process.env.UI_SCREENSHOT || "/tmp/listenbruecke-overview.png", fullPage: true });
 
@@ -110,6 +130,21 @@ test("local setup, provider connections, optional HA list, sync, and ingress lay
     await page.locator('[data-provider-pill="bring"]').filter({ hasText: "Verbunden" }).waitFor();
     assert.equal(await page.locator("#bring-password").inputValue(), "");
     assert.deepEqual(calls.find((call) => call.endpoint === "connections/bring" && call.method === "PUT").body, { email: "synthetic@example.invalid", password: "synthetic-bring-password" });
+
+    assert.equal(await page.locator("#cookidoo-country").inputValue(), "de");
+    assert.equal(await page.locator("#cookidoo-language").inputValue(), "de-DE");
+    await page.locator("#google_keep-email").fill("synthetic@example.invalid");
+    await page.locator("#google_keep-master_token").fill("synthetic-master-token");
+    await page.locator('#google_keep-form button[type="submit"]').click();
+    await page.locator('[data-provider-pill="google_keep"]').filter({ hasText: "Verbunden" }).waitFor();
+    assert.equal(await page.locator("#google_keep-master_token").inputValue(), "");
+    assert.deepEqual(calls.find((call) => call.endpoint === "connections/google_keep" && call.method === "PUT").body, { email: "synthetic@example.invalid", master_token: "synthetic-master-token" });
+    await page.locator("#cookidoo-email").fill("synthetic@example.invalid");
+    await page.locator("#cookidoo-password").fill("synthetic-cookidoo-password");
+    await page.locator('#cookidoo-form button[type="submit"]').click();
+    await page.locator('[data-provider-pill="cookidoo"]').filter({ hasText: "Verbunden" }).waitFor();
+    assert.equal(await page.locator("#cookidoo-password").inputValue(), "");
+    assert.deepEqual(calls.find((call) => call.endpoint === "connections/cookidoo" && call.method === "PUT").body, { email: "synthetic@example.invalid", password: "synthetic-cookidoo-password", country: "de", language: "de-DE" });
 
     const popupPromise = page.waitForEvent("popup");
     await page.locator("#mc-auth-start").click();
@@ -131,6 +166,8 @@ test("local setup, provider connections, optional HA list, sync, and ingress lay
     await page.locator("#list-monsieur_cuisine").selectOption("monsieur_cuisine-test-list");
     await page.locator("#list-bring").selectOption("bring-test-list");
     assert.equal(await page.locator("#list-homeassistant").inputValue(), "");
+    assert.equal(await page.locator("#list-google_keep").inputValue(), "");
+    assert.equal(await page.locator("#list-cookidoo").inputValue(), "");
     assert.equal(await page.locator("#sync-deletions").isChecked(), false);
     await page.locator("#sync-enabled").check();
     await page.locator("#settings-save").click();
@@ -237,6 +274,7 @@ test("Alexa login clears secrets, resumes polling, reports failures, and syncs w
     const body = request.postDataJSON();
     calls.push({ endpoint, method: request.method() });
     const respond = (data, code = 200) => route.fulfill({ status: code, contentType: "application/json", body: JSON.stringify(data) });
+    if (endpoint === "providers") return respond({ providers: providerSpecs });
     if (endpoint === "session") return respond({ authenticated: true, setup_required: false, ingress: false });
     if (endpoint === "status") return respond(status);
     if (endpoint === "events") return respond([]);
@@ -275,7 +313,7 @@ test("Alexa login clears secrets, resumes polling, reports failures, and syncs w
   try {
     await page.goto(origin + prefix);
     await page.locator("#last-refreshed").filter({ hasText: "Aktualisiert" }).waitFor();
-    assert.equal(await page.locator("#nav-connection-count").textContent(), "1/4");
+    assert.equal(await page.locator("#nav-connection-count").textContent(), "1");
     const cards = await page.locator("[data-provider-card]").evaluateAll((elements) => elements.map((element) => ({ x: element.getBoundingClientRect().x, y: element.getBoundingClientRect().y })));
     assert.equal(cards[0].y, cards[1].y);
     assert.equal(cards[2].y, cards[3].y);
@@ -312,7 +350,7 @@ test("Alexa login clears secrets, resumes polling, reports failures, and syncs w
     await page.locator('#list-alexa option[value="alexa-list"]').waitFor({ state: "attached" });
     assert.equal(await page.locator("#sync-interval").inputValue(), "90", "Auth polling must preserve unsaved settings");
     assert.equal(await page.locator("#list-bring").inputValue(), "bring-list");
-    assert.equal(await page.locator("#nav-connection-count").textContent(), "2/4");
+    assert.equal(await page.locator("#nav-connection-count").textContent(), "2");
     await page.locator("#list-alexa").selectOption("alexa-list");
     await page.locator("#sync-enabled").check();
     await page.locator("#settings-save").click();
@@ -400,6 +438,7 @@ test("native HA pairing shows keys only after creation and enables a single prov
     const endpoint = new URL(request.url()).pathname.slice((prefix + "api/").length);
     calls.push({ endpoint, method: request.method(), body: request.postDataJSON() });
     const respond = (data, code = 200) => route.fulfill({ status: code, contentType: "application/json", body: JSON.stringify(data) });
+    if (endpoint === "providers") return respond({ providers: providerSpecs });
     if (endpoint === "session") return respond({ authenticated: true, setup_required: false, ingress });
     if (endpoint === "status") return respond(status);
     if (endpoint === "events") return respond([]);

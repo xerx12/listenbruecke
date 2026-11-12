@@ -1,5 +1,14 @@
 # Änderungen
 
+## 0.4.0
+
+- Google Keep als optionalen Anbieter mit verschlüsselt gespeichertem Master-Token verbinden.
+- Thermomix-Cookidoo-Einkaufsliste mit Rezeptzutaten und freien Zusatzkäufen anbinden.
+- Rezeptzutaten in Cookidoo vor Umbenennen, Mengenänderungen und Löschen schützen.
+- Zentrale Anbieter-Registry mit Formularen, Verbindungstests und dynamischen HA-Verbindungsentitäten.
+- Unausgewählte Konten beeinträchtigen den bestehenden Abgleich und dessen Zuordnungen nicht.
+- Anleitung für zusätzliche Community-Connectoren und transparente Hinweise zu Google-Zugriff und experimentellen Anbindungen.
+
 ## 0.3.1
 
 - Home-Assistant-Entitäten zeigen neue Artikel und Änderungen sofort nach der Aktion.
