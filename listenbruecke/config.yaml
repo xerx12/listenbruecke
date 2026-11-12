@@ -1,7 +1,7 @@
 name: Listenbrücke
-version: "0.3.1"
+version: "0.4.0"
 slug: listenbruecke
-description: Einkaufslisten von Bring!, Monsieur Cuisine, Alexa und Home Assistant abgleichen
+description: Optionale Einkaufslisten von Bring!, MC, Alexa, Google Keep, Cookidoo und HA abgleichen
 arch:
   - amd64
   - aarch64

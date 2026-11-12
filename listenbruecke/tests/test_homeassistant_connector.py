@@ -81,6 +81,21 @@ async def test_discovers_only_independent_lists_and_preserves_duplicate_items(se
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider,platform", [("cookidoo", "cookidoo"), ("google_keep", "google_keep_sync"), ("google_keep", "gkeep_sync")])
+async def test_optional_mirror_blocks_only_selected_direct_provider_even_when_empty(setup, provider, platform):
+    connector, backend = setup
+    connector.origins["todo.local"] = platform
+    backend.rows = []
+    assert "todo.local" in {value.id for value in await connector.list_lists()}
+    await connector.check_independent_source("todo.local", {"homeassistant", "bring"})
+    assert not await connector.get_items("todo.local")
+    calls_before = len(backend.calls)
+    with pytest.raises(UnsupportedOperation, match="bereits dieselbe"):
+        await connector.check_independent_source("todo.local", {"homeassistant", provider})
+    assert len(backend.calls) == calls_before
+
+
+@pytest.mark.asyncio
 async def test_own_native_integration_is_always_excluded_even_when_empty(setup):
     connector, backend = setup
     connector.origins["todo.local"] = "listenbruecke"
@@ -235,7 +250,7 @@ async def test_alexa_mirror_is_allowed_through_ha_alone_but_blocked_with_direct_
     backend.entity = lambda: {**original(), "entity_id": "todo.alexa_list"}
     assert "todo.alexa_list" in {row.id for row in await connector.list_lists()}
     await connector.check_independent_source("todo.alexa_list", {"bring", "homeassistant"})
-    with pytest.raises(UnsupportedOperation, match="dieselbe Alexa-Liste"):
+    with pytest.raises(UnsupportedOperation, match="dieselbe Amazon Alexa-Liste"):
         await connector.check_independent_source("todo.alexa_list", {"alexa", "homeassistant"})
     # Registry identity protects even empty lists, without comparing item IDs.
     backend.rows = []

@@ -27,9 +27,14 @@ class SyncEngine:
 
     def state_key(self, targets):
         keys = [f"{t['provider']}:{t['list_id']}" for t in targets]
-        group = hashlib.sha256(json.dumps({
-            "targets": sorted(keys), "generation": self.store.get("account_generation", 0)
-        }, sort_keys=True).encode()).hexdigest()[:24]
+        identity = {"targets": sorted(keys), "generation": self.store.get("account_generation", 0)}
+        versions = self.store.get("provider_account_generations", {})
+        selected_versions = {t["provider"]: versions[t["provider"]] for t in targets
+                             if versions.get(t["provider"], 0)}
+        # Preserve existing groups until one of their own accounts changes.
+        if selected_versions:
+            identity["provider_generations"] = selected_versions
+        group = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()[:24]
         return "sync:" + group
 
     def include_target(self, targets, target):
@@ -188,7 +193,7 @@ class SyncEngine:
 
             changed_fields = set(changes)
             if changed_fields & {"name", "description"} and any(item and not item.editable for item in current.values()):
-                conflict("Name oder Menge eines Monsieur-Cuisine-Rezeptbestandteils kann nicht zurückgeschrieben werden. Die Änderung bleibt zur Prüfung offen.")
+                conflict("Name oder Menge eines geschützten Rezeptbestandteils kann nicht zurückgeschrieben werden. Die Änderung bleibt zur Prüfung offen.")
                 continue
             if changed_fields:
                 for field, values in changes.items():

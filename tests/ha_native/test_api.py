@@ -51,3 +51,19 @@ async def test_auth_failure_uses_a_dedicated_safe_error(hass, aioclient_mock):
     with pytest.raises(ApiAuthError) as error:
         await api.async_get_state()
     assert TOKEN not in str(error.value)
+
+
+async def test_provider_selection_is_validated_and_old_servers_remain_compatible(hass, aioclient_mock):
+    from .conftest import FakeLocalApi
+    api = ListenbrueckeApi(async_get_clientsession(hass), BASE, TOKEN)
+    body = FakeLocalApi().state
+    body["providers"][0]["selected"] = False
+    aioclient_mock.get(BASE + "/api/ha/v1/state", json=body)
+    parsed = await api.async_get_state()
+    assert parsed["providers"][0]["selected"] is False
+    assert parsed["providers"][1]["selected"] is True  # Older API: configured fallback.
+    body["providers"][0]["selected"] = "false"
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(BASE + "/api/ha/v1/state", json=body)
+    with pytest.raises(ApiError):
+        await api.async_get_state()

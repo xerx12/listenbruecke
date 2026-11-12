@@ -38,6 +38,7 @@
     },
     "binary_sensor": {
       "problem": {"name": "Problem"},
+      "provider_connection": {"name": "{provider} connection"},
       "provider_bring": {"name": "Bring! connection"},
       "provider_monsieur_cuisine": {"name": "Monsieur Cuisine connection"},
       "provider_alexa": {"name": "Alexa connection"},
