@@ -2,19 +2,29 @@
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity
 from homeassistant.const import EntityCategory
+from homeassistant.core import callback
 
 from .entity import ListenbrueckeEntity
-
-PROVIDERS = ("bring", "monsieur_cuisine", "alexa", "homeassistant")
 
 
 async def async_setup_entry(hass, entry, async_add_entities):
     """Add connection diagnostics and the shared problem indicator."""
     coordinator = entry.runtime_data
-    async_add_entities([
-        ProblemSensor(coordinator),
-        *(ProviderConnectionSensor(coordinator, provider) for provider in PROVIDERS),
-    ])
+    async_add_entities([ProblemSensor(coordinator)])
+    known = set()
+
+    @callback
+    def add_new_providers():
+        entities = []
+        for provider in (coordinator.data or {}).get("state", {}).get("providers", []):
+            if provider["id"] not in known:
+                known.add(provider["id"])
+                entities.append(ProviderConnectionSensor(coordinator, provider["id"], provider["name"]))
+        if entities:
+            async_add_entities(entities)
+
+    add_new_providers()
+    entry.async_on_unload(coordinator.async_add_listener(add_new_providers))
 
 
 class ProblemSensor(ListenbrueckeEntity, BinarySensorEntity):
@@ -33,7 +43,7 @@ class ProblemSensor(ListenbrueckeEntity, BinarySensorEntity):
         if (state.get("sync") or {}).get("last_error"):
             return True
         return any(
-            provider.get("configured") and (provider.get("error") or not provider.get("connected"))
+            provider.get("selected", provider.get("configured")) and (provider.get("error") or not provider.get("connected"))
             for provider in state.get("providers", []) if isinstance(provider, dict)
         )
 
@@ -44,10 +54,18 @@ class ProviderConnectionSensor(ListenbrueckeEntity, BinarySensorEntity):
     _attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
     _attr_entity_category = EntityCategory.DIAGNOSTIC
 
-    def __init__(self, coordinator, provider):
+    def __init__(self, coordinator, provider, name):
         super().__init__(coordinator, "provider_" + provider)
         self._provider = provider
-        self._attr_translation_key = "provider_" + provider
+        self._attr_translation_key = "provider_connection"
+        self._attr_translation_placeholders = {"provider": name}
+
+    @property
+    def available(self):
+        return super().available and any(
+            provider["id"] == self._provider
+            for provider in (self.coordinator.data or {}).get("state", {}).get("providers", [])
+        )
 
     @property
     def is_on(self):

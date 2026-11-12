@@ -90,11 +90,13 @@ class ListenbrueckeApi:
         parsed_providers = []
         for provider in providers:
             if (not isinstance(provider, dict) or type(provider.get("configured")) is not bool
-                    or type(provider.get("connected")) is not bool):
+                    or type(provider.get("connected")) is not bool
+                    or ("selected" in provider and type(provider["selected"]) is not bool)):
                 raise ApiError("Die Listenbrücke-App hat ein unbekanntes Datenformat geliefert.")
             parsed_providers.append({
                 "id": _string(provider.get("id"), empty=False), "name": _string(provider.get("name"), empty=False),
                 "configured": provider["configured"], "connected": provider["connected"],
+                "selected": provider.get("selected", provider["configured"]),
                 "last_test": _optional_string(provider.get("last_test")), "error": _optional_string(provider.get("error")),
             })
         if len({provider["id"] for provider in parsed_providers}) != len(parsed_providers):

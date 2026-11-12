@@ -85,6 +85,34 @@ async def test_provider_problem_and_unavailable_items_preserve_state(hass, local
     assert len(config_entry.runtime_data.data["items"]["items"]) == 2
 
 
+async def test_new_providers_are_added_after_refresh_and_unselected_accounts_are_not_problems(hass, local_api, config_entry):
+    await setup(hass, config_entry)
+    registry = er.async_get(hass)
+    original_ids = {entry.entity_id for entry in er.async_entries_for_config_entry(registry, config_entry.entry_id)}
+    local_api.state["providers"].append({"id": "community_demo", "name": "Community Demo", "configured": True,
+                                       "selected": False, "connected": False, "error": "Synthetic optional account unavailable", "last_test": None})
+    await config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    sensor = entity_id(hass, "binary_sensor", "provider_community_demo")
+    assert hass.states.get(sensor).state == "off"
+    assert "Community Demo" in hass.states.get(sensor).name
+    assert hass.states.get(entity_id(hass, "binary_sensor", "problem")).state == "off"
+    entries = er.async_entries_for_config_entry(registry, config_entry.entry_id)
+    assert len(entries) == 13
+    assert original_ids <= {entry.entity_id for entry in entries}
+    local_api.state["providers"][-1]["selected"] = True
+    await config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id(hass, "binary_sensor", "problem")).state == "on"
+    assert len(er.async_entries_for_config_entry(registry, config_entry.entry_id)) == 13
+    local_api.state["providers"].pop()
+    await config_entry.runtime_data.async_refresh()
+    await hass.async_block_till_done()
+    assert hass.states.get(sensor).state == STATE_UNAVAILABLE
+    assert await hass.config_entries.async_unload(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+
 async def test_api_outage_marks_entities_unavailable_and_auth_failure_starts_reauth(hass, local_api, config_entry):
     await setup(hass, config_entry)
     local_api.status = 503
